@@ -106,6 +106,158 @@ jobs:
             exit 1
           fi
 
+      - name: GeoKhewat functional integration suite
+        shell: bash
+        run: |
+          set -eo pipefail
+          cd /tmp/fabric-run/fabric-samples/test-network
+          export PATH="${PWD}/../bin:$PATH"
+          export FABRIC_CFG_PATH="${PWD}/../config"
+          source ./scripts/envVar.sh
+          setGlobals 1
+
+          RESULTS="$GITHUB_WORKSPACE/experiment-results-final"
+          ORDERER_CA="${PWD}/organizations/ordererOrganizations/example.com/tlsca/tlsca.example.com-cert.pem"
+          ORG1_TLS="${PWD}/organizations/peerOrganizations/org1.example.com/tlsca/tlsca.org1.example.com-cert.pem"
+          ORG2_TLS="${PWD}/organizations/peerOrganizations/org2.example.com/tlsca/tlsca.org2.example.com-cert.pem"
+
+          PASS=0
+          FAIL=0
+
+          invoke_cc() {
+            local outfile="$1"
+            local payload="$2"
+            set +e
+            peer chaincode invoke \
+              -o localhost:7050 \
+              --ordererTLSHostnameOverride orderer.example.com \
+              --tls --cafile "$ORDERER_CA" \
+              -C landrecords -n geokhewat \
+              --peerAddresses localhost:7051 --tlsRootCertFiles "$ORG1_TLS" \
+              --peerAddresses localhost:9051 --tlsRootCertFiles "$ORG2_TLS" \
+              --waitForEvent \
+              -c "$payload" > "$outfile" 2>&1
+            local rc=$?
+            set -e
+            echo "EXIT_CODE=$rc" >> "$outfile"
+            return $rc
+          }
+
+          query_cc() {
+            local outfile="$1"
+            local payload="$2"
+            set +e
+            peer chaincode query -C landrecords -n geokhewat -c "$payload" > "$outfile" 2>&1
+            local rc=$?
+            set -e
+            echo "EXIT_CODE=$rc" >> "$outfile"
+            return $rc
+          }
+
+          record_pass() { echo "PASS $1" | tee -a "$RESULTS/20_functional_summary.txt"; PASS=$((PASS+1)); }
+          record_fail() { echo "FAIL $1" | tee -a "$RESULTS/20_functional_summary.txt"; FAIL=$((FAIL+1)); }
+
+          : > "$RESULTS/20_functional_summary.txt"
+
+          RING1='[[75.5000,31.0000],[75.5010,31.0000],[75.5010,31.0010],[75.5000,31.0010],[75.5000,31.0000]]'
+          RING2='[[75.5010,31.0000],[75.5020,31.0000],[75.5020,31.0010],[75.5010,31.0010],[75.5010,31.0000]]'
+          RING3='[[75.5002,31.0002],[75.5008,31.0002],[75.5008,31.0008],[75.5002,31.0008],[75.5002,31.0002]]'
+          RING1_RECT='[[75.500005,31.0000],[75.5010,31.0000],[75.5010,31.0010],[75.500005,31.0010],[75.500005,31.0000]]'
+          RING1_TOO_BIG='[[75.4990,30.9990],[75.5020,30.9990],[75.5020,31.0020],[75.4990,31.0020],[75.4990,30.9990]]'
+          BOWTIE='[[75.5100,31.0000],[75.5110,31.0010],[75.5100,31.0010],[75.5110,31.0000],[75.5100,31.0000]]'
+          SHARES_A='[{"owner":"Alice","num":"1","den":"1"}]'
+
+          P=$(jq -cn --arg f RegisterParcel --arg a P001 --arg b K001 --arg c "$RING1" --arg d "$SHARES_A" --arg e SYNTHETIC_GHA --arg g '[]' '{Args:[$f,$a,$b,$c,$d,$e,$g]}')
+          if invoke_cc "$RESULTS/10_register_P001.txt" "$P"; then record_pass "register_P001"; else record_fail "register_P001"; fi
+
+          P=$(jq -cn --arg f QueryParcel --arg a P001 '{Args:[$f,$a]}')
+          if query_cc "$RESULTS/11_query_P001.txt" "$P" && grep -q 'P001' "$RESULTS/11_query_P001.txt"; then record_pass "query_P001"; else record_fail "query_P001"; fi
+
+          P=$(jq -cn --arg f RegisterParcel --arg a P002 --arg b K002 --arg c "$RING2" --arg d "$SHARES_A" --arg e SYNTHETIC_GHA --arg g '["P001"]' '{Args:[$f,$a,$b,$c,$d,$e,$g]}')
+          if invoke_cc "$RESULTS/12_register_P002_shared_boundary.txt" "$P"; then record_pass "shared_boundary_P002"; else record_fail "shared_boundary_P002"; fi
+
+          P=$(jq -cn --arg f QueryParcel --arg a P002 '{Args:[$f,$a]}')
+          if query_cc "$RESULTS/13_query_P002.txt" "$P" && grep -q 'P002' "$RESULTS/13_query_P002.txt"; then record_pass "query_P002"; else record_fail "query_P002"; fi
+
+          P=$(jq -cn --arg f RegisterParcel --arg a P003 --arg b K003 --arg c "$RING3" --arg d "$SHARES_A" --arg e SYNTHETIC_GHA --arg g '["P001"]' '{Args:[$f,$a,$b,$c,$d,$e,$g]}')
+          if invoke_cc "$RESULTS/14_overlap_P003.txt" "$P"; then
+            record_fail "overlap_P003_rejected"
+          else
+            if grep -Eqi 'overlap|intersect' "$RESULTS/14_overlap_P003.txt"; then record_pass "overlap_P003_rejected"; else record_fail "overlap_P003_rejected"; fi
+          fi
+
+          P=$(jq -cn --arg f QueryParcel --arg a P003 '{Args:[$f,$a]}')
+          if query_cc "$RESULTS/15_query_P003_after_rejection.txt" "$P"; then
+            record_fail "P003_absent_after_rejection"
+          else
+            if grep -Eqi 'not found|does not exist' "$RESULTS/15_query_P003_after_rejection.txt"; then record_pass "P003_absent_after_rejection"; else record_fail "P003_absent_after_rejection"; fi
+          fi
+
+          P=$(jq -cn --arg f RectifyBoundary --arg a P001 --arg b "$RING1_RECT" --arg c SYNTHETIC_RECTIFICATION --arg d '["P002"]' '{Args:[$f,$a,$b,$c,$d]}')
+          if invoke_cc "$RESULTS/16_rectify_P001_valid.txt" "$P"; then record_pass "rectify_P001_within_2pct"; else record_fail "rectify_P001_within_2pct"; fi
+
+          P=$(jq -cn --arg f QueryParcel --arg a P001 '{Args:[$f,$a]}')
+          if query_cc "$RESULTS/17_query_P001_after_rectify.txt" "$P" && grep -q '"version":2' "$RESULTS/17_query_P001_after_rectify.txt"; then record_pass "P001_version_increment"; else record_fail "P001_version_increment"; fi
+
+          P=$(jq -cn --arg f RectifyBoundary --arg a P001 --arg b "$RING1_TOO_BIG" --arg c SYNTHETIC_INVALID_AREA --arg d '["P002"]' '{Args:[$f,$a,$b,$c,$d]}')
+          if invoke_cc "$RESULTS/18_rectify_P001_over_2pct.txt" "$P"; then
+            record_fail "rectify_over_2pct_rejected"
+          else
+            if grep -Eqi '2%|area bound|exceeds' "$RESULTS/18_rectify_P001_over_2pct.txt"; then record_pass "rectify_over_2pct_rejected"; else record_fail "rectify_over_2pct_rejected"; fi
+          fi
+
+          P=$(jq -cn --arg f RegisterParcel --arg a P004 --arg b K004 --arg c "$BOWTIE" --arg d "$SHARES_A" --arg e SYNTHETIC_INVALID_GEOMETRY --arg g '[]' '{Args:[$f,$a,$b,$c,$d,$e,$g]}')
+          if invoke_cc "$RESULTS/19_self_intersection_P004.txt" "$P"; then
+            record_fail "self_intersection_rejected"
+          else
+            if grep -Eqi 'self-intersect|simple' "$RESULTS/19_self_intersection_P004.txt"; then record_pass "self_intersection_rejected"; else record_fail "self_intersection_rejected"; fi
+          fi
+
+          P=$(jq -cn --arg f TransferShare --arg a K001 --arg b Alice --arg c Bob --arg d 1 --arg e 2 '{Args:[$f,$a,$b,$c,$d,$e]}')
+          if invoke_cc "$RESULTS/21_transfer_share_K001.txt" "$P"; then record_pass "transfer_share_K001"; else record_fail "transfer_share_K001"; fi
+
+          echo "PASS_COUNT=$PASS" | tee -a "$RESULTS/20_functional_summary.txt"
+          echo "FAIL_COUNT=$FAIL" | tee -a "$RESULTS/20_functional_summary.txt"
+
+          if [ "$FAIL" -ne 0 ]; then
+            echo "FUNCTIONAL_SUITE=FAIL" | tee -a "$RESULTS/20_functional_summary.txt"
+            exit 1
+          fi
+          echo "FUNCTIONAL_SUITE=PASS" | tee -a "$RESULTS/20_functional_summary.txt"
+
+      - name: MVCC concurrency probe
+        if: success()
+        shell: bash
+        run: |
+          set -eo pipefail
+          cd /tmp/fabric-run/fabric-samples/test-network
+          export PATH="${PWD}/../bin:$PATH"
+          export FABRIC_CFG_PATH="${PWD}/../config"
+          source ./scripts/envVar.sh
+          setGlobals 1
+
+          RESULTS="$GITHUB_WORKSPACE/experiment-results-final"
+          ORDERER_CA="${PWD}/organizations/ordererOrganizations/example.com/tlsca/tlsca.example.com-cert.pem"
+          ORG1_TLS="${PWD}/organizations/peerOrganizations/org1.example.com/tlsca/tlsca.org1.example.com-cert.pem"
+          ORG2_TLS="${PWD}/organizations/peerOrganizations/org2.example.com/tlsca/tlsca.org2.example.com-cert.pem"
+
+          PAYLOAD_A=$(jq -cn --arg f TransferShare --arg a K001 --arg b Alice --arg c Carol --arg d 1 --arg e 4 '{Args:[$f,$a,$b,$c,$d,$e]}')
+          PAYLOAD_B=$(jq -cn --arg f TransferShare --arg a K001 --arg b Alice --arg c Dave --arg d 1 --arg e 4 '{Args:[$f,$a,$b,$c,$d,$e]}')
+
+          set +e
+          peer chaincode invoke -o localhost:7050 --ordererTLSHostnameOverride orderer.example.com --tls --cafile "$ORDERER_CA" -C landrecords -n geokhewat --peerAddresses localhost:7051 --tlsRootCertFiles "$ORG1_TLS" --peerAddresses localhost:9051 --tlsRootCertFiles "$ORG2_TLS" --waitForEvent -c "$PAYLOAD_A" > "$RESULTS/22_mvcc_A.txt" 2>&1 &
+          PID_A=$!
+          peer chaincode invoke -o localhost:7050 --ordererTLSHostnameOverride orderer.example.com --tls --cafile "$ORDERER_CA" -C landrecords -n geokhewat --peerAddresses localhost:7051 --tlsRootCertFiles "$ORG1_TLS" --peerAddresses localhost:9051 --tlsRootCertFiles "$ORG2_TLS" --waitForEvent -c "$PAYLOAD_B" > "$RESULTS/23_mvcc_B.txt" 2>&1 &
+          PID_B=$!
+          wait $PID_A; RCA=$?
+          wait $PID_B; RCB=$?
+          set -e
+
+          echo "MVCC_A_EXIT=$RCA" | tee "$RESULTS/24_mvcc_summary.txt"
+          echo "MVCC_B_EXIT=$RCB" | tee -a "$RESULTS/24_mvcc_summary.txt"
+          grep -Ehi 'MVCC|VALID|invalid|conflict|successful' "$RESULTS/22_mvcc_A.txt" "$RESULTS/23_mvcc_B.txt" | tee -a "$RESULTS/24_mvcc_summary.txt" || true
+          echo "MVCC probe is observational; paper claims must follow the recorded validation codes." | tee -a "$RESULTS/24_mvcc_summary.txt"
+
       - name: Upload experiment results
         if: always()
         uses: actions/upload-artifact@v4
