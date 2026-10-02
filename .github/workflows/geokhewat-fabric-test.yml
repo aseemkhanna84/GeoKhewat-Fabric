@@ -1,0 +1,115 @@
+name: GeoKhewat Fabric Experiment
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - ".github/workflows/geokhewat-fabric-test.yml"
+
+jobs:
+  fabric-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout GeoKhewat repository
+        uses: actions/checkout@v4
+
+      - name: Prepare result directory
+        run: mkdir -p experiment-results-final
+
+      - name: Install Hyperledger Fabric 2.5.16
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/fabric-run
+          cd /tmp/fabric-run
+          curl -sSL https://raw.githubusercontent.com/hyperledger/fabric/main/scripts/install-fabric.sh -o install-fabric.sh
+          chmod +x install-fabric.sh
+          ./install-fabric.sh -f 2.5.16 -c 1.5.17 docker binary samples
+          docker --version
+          docker compose version
+
+      - name: Extract GeoKhewat chaincode
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/geokhewat-cc
+          mkdir -p /tmp/geokhewat-cc
+          unzip -q "$GITHUB_WORKSPACE/GeoKhewat_chaincode_v2.zip" -d /tmp/geokhewat-cc
+          CCP=$(find /tmp/geokhewat-cc -name package.json -not -path '*/node_modules/*' -printf '%h\n' | head -1)
+          if [ -z "$CCP" ]; then
+            echo "No package.json found in GeoKhewat_chaincode_v2.zip"
+            find /tmp/geokhewat-cc -maxdepth 4 -type f -print
+            exit 1
+          fi
+          echo "CCP=$CCP" >> "$GITHUB_ENV"
+          echo "$CCP" | tee "$GITHUB_WORKSPACE/experiment-results-final/00_chaincode_path.txt"
+          echo "===== PACKAGE.JSON =====" | tee "$GITHUB_WORKSPACE/experiment-results-final/00_package.txt"
+          cat "$CCP/package.json" | tee -a "$GITHUB_WORKSPACE/experiment-results-final/00_package.txt"
+
+      - name: Start clean Fabric network
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/fabric-run/fabric-samples/test-network
+          ./network.sh down || true
+          ./network.sh up createChannel -ca -c landrecords -s couchdb 2>&1 | tee "$GITHUB_WORKSPACE/experiment-results-final/01_network_start.txt"
+          docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | tee "$GITHUB_WORKSPACE/experiment-results-final/02_containers.txt"
+
+      - name: Deploy GeoKhewat chaincode
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/fabric-run/fabric-samples/test-network
+          ./network.sh deployCC -ccn geokhewat -ccp "$CCP" -ccl javascript -c landrecords 2>&1 | tee "$GITHUB_WORKSPACE/experiment-results-final/03_deploy_chaincode.txt"
+
+      - name: Verify committed chaincode
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/fabric-run/fabric-samples/test-network
+          export PATH="${PWD}/../bin:$PATH"
+          export FABRIC_CFG_PATH="${PWD}/../config"
+          source ./scripts/envVar.sh
+          setGlobals 1
+          peer channel list 2>&1 | tee "$GITHUB_WORKSPACE/experiment-results-final/04_channel_org1.txt"
+          peer lifecycle chaincode querycommitted --channelID landrecords --name geokhewat 2>&1 | tee "$GITHUB_WORKSPACE/experiment-results-final/05_querycommitted.txt"
+
+      - name: GeoKhewat runtime smoke test
+        shell: bash
+        run: |
+          set -uo pipefail
+          cd /tmp/fabric-run/fabric-samples/test-network
+          export PATH="${PWD}/../bin:$PATH"
+          export FABRIC_CFG_PATH="${PWD}/../config"
+          source ./scripts/envVar.sh
+          setGlobals 1
+
+          set +e
+          peer chaincode query -C landrecords -n geokhewat -c '{"Args":["QueryParcel","P000"]}' > "$GITHUB_WORKSPACE/experiment-results-final/06_smoke.txt" 2>&1
+          RC=$?
+          set -e
+
+          cat "$GITHUB_WORKSPACE/experiment-results-final/06_smoke.txt"
+          echo "EXIT_CODE=$RC" >> "$GITHUB_WORKSPACE/experiment-results-final/06_smoke.txt"
+
+          if grep -q "Parcel P000 not found" "$GITHUB_WORKSPACE/experiment-results-final/06_smoke.txt"; then
+            echo "GEOKHEWAT_RUNTIME_SMOKE=PASS" | tee "$GITHUB_WORKSPACE/experiment-results-final/07_summary.txt"
+          else
+            echo "GEOKHEWAT_RUNTIME_SMOKE=FAIL" | tee "$GITHUB_WORKSPACE/experiment-results-final/07_summary.txt"
+            docker ps -a > "$GITHUB_WORKSPACE/experiment-results-final/diagnostic_containers.txt" 2>&1 || true
+            docker logs peer0.org1.example.com > "$GITHUB_WORKSPACE/experiment-results-final/diagnostic_org1.log" 2>&1 || true
+            docker logs peer0.org2.example.com > "$GITHUB_WORKSPACE/experiment-results-final/diagnostic_org2.log" 2>&1 || true
+            docker logs orderer.example.com > "$GITHUB_WORKSPACE/experiment-results-final/diagnostic_orderer.log" 2>&1 || true
+            exit 1
+          fi
+
+      - name: Upload experiment results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GeoKhewat-Fabric-Experiment
+          path: experiment-results-final/
+          if-no-files-found: warn
