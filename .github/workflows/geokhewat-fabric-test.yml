@@ -68,7 +68,7 @@ jobs:
       - name: Verify committed chaincode
         shell: bash
         run: |
-          set -euo pipefail
+          set -eo pipefail
           cd /tmp/fabric-run/fabric-samples/test-network
           export PATH="${PWD}/../bin:$PATH"
           export FABRIC_CFG_PATH="${PWD}/../config"
@@ -80,7 +80,7 @@ jobs:
       - name: GeoKhewat runtime smoke test
         shell: bash
         run: |
-          set -uo pipefail
+          set -o pipefail
           cd /tmp/fabric-run/fabric-samples/test-network
           export PATH="${PWD}/../bin:$PATH"
           export FABRIC_CFG_PATH="${PWD}/../config"
