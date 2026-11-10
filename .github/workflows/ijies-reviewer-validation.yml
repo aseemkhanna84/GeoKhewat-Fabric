@@ -77,7 +77,7 @@ jobs:
           print("FROZEN SMOKE: PASS, not a multi-host Fabric result or a safety proof")
           PY
       - name: Run optional exploratory full replay
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_full }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.run_full) }}
         shell: bash
         run: |
           set -euo pipefail
