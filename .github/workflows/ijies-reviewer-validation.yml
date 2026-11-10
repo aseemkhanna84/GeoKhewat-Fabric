@@ -8,37 +8,14 @@ on:
       - "research-artifacts/**"
   workflow_dispatch:
     inputs:
-      run_replay:
-        description: "Run v1.5.1 tests and frozen request replay after sanitized archives are present"
-        type: boolean
-        default: false
       run_full:
-        description: "Run exploratory ten-seed replay (slow)"
+        description: "Also run exploratory 10-seed replay after smoke tests pass"
         type: boolean
         default: false
 permissions:
   contents: read
 jobs:
-  preflight:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Report source readiness
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "## GeoKhewat IJIES revision readiness" >> "$GITHUB_STEP_SUMMARY"
-          for file in research-artifacts/06_GeoKhewat_reproducibility_artifact_v10.zip research-artifacts/GeoKhewat_IJIES_Revision_Starter_10Nov2026.zip; do
-            if [ -f "$file" ]; then
-              unzip -tq "$file" > /dev/null
-              echo "PRESENT $file" >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "MISSING $file" >> "$GITHUB_STEP_SUMMARY"
-            fi
-          done
-          echo "Preflight is NOT a runtime test, Fabric validation, or proof of manuscript results." >> "$GITHUB_STEP_SUMMARY"
-  frozen-replay:
-    if: github.event_name == 'workflow_dispatch' && inputs.run_replay
+  reviewer-replay:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -46,64 +23,73 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Extract original source and experimental patch
+      - name: Validate public sanitized ZIP
         shell: bash
         run: |
           set -euo pipefail
-          test -f research-artifacts/06_GeoKhewat_reproducibility_artifact_v10.zip || { echo "v1.5.1 source ZIP missing"; exit 1; }
-          test -f research-artifacts/GeoKhewat_IJIES_Revision_Starter_10Nov2026.zip || { echo "Patch ZIP missing"; exit 1; }
-          mkdir -p work/source work/patch
-          unzip -q research-artifacts/06_GeoKhewat_reproducibility_artifact_v10.zip -d work/source
-          unzip -q research-artifacts/GeoKhewat_IJIES_Revision_Starter_10Nov2026.zip -d work/patch
-          test -f work/patch/bench_cc_frozen_trace_EXPERIMENTAL.js
-          mkdir -p work/source/GeoKhewat_artifact_v10/chaincode_v14
-          ln -s ../chaincode work/source/GeoKhewat_artifact_v10/chaincode_v14/geokhewat-chaincode
-          sha256sum research-artifacts/*.zip > work/input_hashes.txt
-      - name: Run pinned chaincode tests
+          ZIP=research-artifacts/GeoKhewat_v1.5.1_Reviewer_Sanitized_Source_10Nov2026.zip
+          test -f "$ZIP"
+          echo "Source archive: $(sha256sum "$ZIP")" | tee -a "$GITHUB_STEP_SUMMARY"
+          unzip -tq "$ZIP"
+          mkdir -p work
+          unzip -q "$ZIP" -d work
+          python3 - <<'PY'
+          import json, hashlib, pathlib
+          p=pathlib.Path("work"); m=json.loads((p/"SHA256_MANIFEST.json").read_text())
+          for name, expected in m["files"].items():
+              f=p/name
+              assert f.exists(),f"Missing {name}"
+              assert hashlib.sha256(f.read_bytes()).hexdigest()==expected,f"Changed {name}"
+          print("Verified file hashes:",len(m["files"]))
+          PY
+      - name: Run original pinned chaincode unit tests
         shell: bash
         run: |
           set -euo pipefail
-          cd work/source/GeoKhewat_artifact_v10/chaincode
+          cd work/v1.5.1/chaincode
           npm ci --no-audit --no-fund
-          npm test | tee "$GITHUB_WORKSPACE/work/v151_tests.txt"
-      - name: Frozen proposal replay smoke
+          npm test | tee "$GITHUB_WORKSPACE/work/chaincode_test_stdout.txt"
+      - name: Run experimental frozen-proposal replay
         shell: bash
         run: |
           set -euo pipefail
-          cp work/patch/bench_cc_frozen_trace_EXPERIMENTAL.js work/source/GeoKhewat_artifact_v10/layerb/bench_cc.js
-          cd work/source/GeoKhewat_artifact_v10/layerb
+          cp work/reviewer-revision/bench_cc_frozen_trace_EXPERIMENTAL.js work/v1.5.1/layerb/bench_cc.js
+          mkdir -p work/v1.5.1/chaincode_v14
+          ln -s ../chaincode work/v1.5.1/chaincode_v14/geokhewat-chaincode
+          cd work/v1.5.1/layerb
           npm ci --no-audit --no-fund
           node --check bench_cc.js
-          node bench_cc.js '{"tag":"frozen_smoke","frozen_trace":true,"trace_source":"GKCR:poly","strategies":["GKF:poly","GKCR:poly"],"B":[32],"seeds":[1],"blocks":2}' | tee "$GITHUB_WORKSPACE/work/smoke.txt"
-      - name: Check same requests and offered denominators
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import json,pathlib
-          p=pathlib.Path("work/source/GeoKhewat_artifact_v10/layerb/out/bench/frozen_smoke.jsonl")
-          rows=[json.loads(x) for x in p.read_text().splitlines() if x.strip()]
-          assert len(rows)==2, len(rows)
-          assert len({r["trace_sha256"] for r in rows})==1
-          assert all(r["offered"]==64 for r in rows)
-          for r in rows:
-              print({k:r.get(k) for k in ("strategy","offered","endorsed","refused","mvcc","valid")})
-          print("Frozen smoke checked; causal performance comparison not established")
-          PY
-      - name: Full ten-seed replay
-        if: inputs.run_full
+          node bench_cc.js '{"tag":"frozen_smoke","frozen_trace":true,"trace_source":"GKCR:poly","strategies":["GKF:poly","GKCR:poly"],"B":[32],"seeds":[1],"blocks":2}' | tee "$GITHUB_WORKSPACE/work/frozen_smoke_stdout.txt"
+      - name: Assert matched trace and exact offered denominators
         shell: bash
         run: |
           set -euo pipefail
-          cd work/source/GeoKhewat_artifact_v10/layerb
-          node bench_cc.js '{"tag":"frozen_ten","frozen_trace":true,"trace_source":"GKCR:poly","strategies":["GKF:poly","GKCR:poly"],"B":[64,128,256],"seeds":[1,2,3,4,5,6,7,8,9,10],"blocks":6}' | tee "$GITHUB_WORKSPACE/work/full.txt"
-      - name: Archive diagnostics, including failed tests
+          python3 - <<'PY'
+          import json, pathlib
+          p=pathlib.Path("work/v1.5.1/layerb/out/bench/frozen_smoke.jsonl")
+          rows=[json.loads(x) for x in p.read_text().splitlines() if x.strip()]
+          assert len(rows)==2,(len(rows),rows)
+          keys={r.get("trace_sha256") for r in rows}
+          assert len(keys)==1 and None not in keys,keys
+          assert all(r.get("offered")==64 for r in rows),rows
+          for r in rows:
+              print({k:r.get(k) for k in ("strategy","offered","endorsed","refused","mvcc","valid","trace_sha256")})
+          print("FROZEN SMOKE: PASS, not a multi-host Fabric result or a safety proof")
+          PY
+      - name: Run optional exploratory full replay
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_full }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work/v1.5.1/layerb
+          node bench_cc.js '{"tag":"frozen_ten","frozen_trace":true,"trace_source":"GKCR:poly","strategies":["GKF:poly","GKCR:poly"],"B":[64,128,256],"seeds":[1,2,3,4,5,6,7,8,9,10],"blocks":6}' | tee "$GITHUB_WORKSPACE/work/frozen_ten_stdout.txt"
+      - name: Publish outputs including failed run diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: reviewer-frozen-replay-diagnostics
+          name: v151-frozen-request-diagnostics
           path: |
-            work/input_hashes.txt
-            work/*.txt
-            work/source/GeoKhewat_artifact_v10/layerb/out/bench/frozen_*.jsonl
-            work/source/GeoKhewat_artifact_v10/layerb/out/frozen_traces/
+            work/*stdout.txt
+            work/v1.5.1/layerb/out/bench/frozen_*.jsonl
+            work/v1.5.1/layerb/out/frozen_traces/
           if-no-files-found: warn
