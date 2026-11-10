@@ -1,0 +1,109 @@
+name: IJIES v1.5.1 reviewer validation
+on:
+  push:
+    branches: [ijies-reviewer-revision-2026-11-10]
+    paths:
+      - ".github/workflows/ijies-reviewer-validation.yml"
+      - "reviewer-revision/**"
+      - "research-artifacts/**"
+  workflow_dispatch:
+    inputs:
+      run_replay:
+        description: "Run v1.5.1 tests and frozen request replay after sanitized archives are present"
+        type: boolean
+        default: false
+      run_full:
+        description: "Run exploratory ten-seed replay (slow)"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report source readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "## GeoKhewat IJIES revision readiness" >> "$GITHUB_STEP_SUMMARY"
+          for file in research-artifacts/06_GeoKhewat_reproducibility_artifact_v10.zip research-artifacts/GeoKhewat_IJIES_Revision_Starter_10Nov2026.zip; do
+            if [ -f "$file" ]; then
+              unzip -tq "$file" > /dev/null
+              echo "PRESENT $file" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "MISSING $file" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          echo "Preflight is NOT a runtime test, Fabric validation, or proof of manuscript results." >> "$GITHUB_STEP_SUMMARY"
+  frozen-replay:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Extract original source and experimental patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research-artifacts/06_GeoKhewat_reproducibility_artifact_v10.zip || { echo "v1.5.1 source ZIP missing"; exit 1; }
+          test -f research-artifacts/GeoKhewat_IJIES_Revision_Starter_10Nov2026.zip || { echo "Patch ZIP missing"; exit 1; }
+          mkdir -p work/source work/patch
+          unzip -q research-artifacts/06_GeoKhewat_reproducibility_artifact_v10.zip -d work/source
+          unzip -q research-artifacts/GeoKhewat_IJIES_Revision_Starter_10Nov2026.zip -d work/patch
+          test -f work/patch/bench_cc_frozen_trace_EXPERIMENTAL.js
+          mkdir -p work/source/GeoKhewat_artifact_v10/chaincode_v14
+          ln -s ../chaincode work/source/GeoKhewat_artifact_v10/chaincode_v14/geokhewat-chaincode
+          sha256sum research-artifacts/*.zip > work/input_hashes.txt
+      - name: Run pinned chaincode tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work/source/GeoKhewat_artifact_v10/chaincode
+          npm ci --no-audit --no-fund
+          npm test | tee "$GITHUB_WORKSPACE/work/v151_tests.txt"
+      - name: Frozen proposal replay smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp work/patch/bench_cc_frozen_trace_EXPERIMENTAL.js work/source/GeoKhewat_artifact_v10/layerb/bench_cc.js
+          cd work/source/GeoKhewat_artifact_v10/layerb
+          npm ci --no-audit --no-fund
+          node --check bench_cc.js
+          node bench_cc.js '{"tag":"frozen_smoke","frozen_trace":true,"trace_source":"GKCR:poly","strategies":["GKF:poly","GKCR:poly"],"B":[32],"seeds":[1],"blocks":2}' | tee "$GITHUB_WORKSPACE/work/smoke.txt"
+      - name: Check same requests and offered denominators
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json,pathlib
+          p=pathlib.Path("work/source/GeoKhewat_artifact_v10/layerb/out/bench/frozen_smoke.jsonl")
+          rows=[json.loads(x) for x in p.read_text().splitlines() if x.strip()]
+          assert len(rows)==2, len(rows)
+          assert len({r["trace_sha256"] for r in rows})==1
+          assert all(r["offered"]==64 for r in rows)
+          for r in rows:
+              print({k:r.get(k) for k in ("strategy","offered","endorsed","refused","mvcc","valid")})
+          print("Frozen smoke checked; causal performance comparison not established")
+          PY
+      - name: Full ten-seed replay
+        if: inputs.run_full
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work/source/GeoKhewat_artifact_v10/layerb
+          node bench_cc.js '{"tag":"frozen_ten","frozen_trace":true,"trace_source":"GKCR:poly","strategies":["GKF:poly","GKCR:poly"],"B":[64,128,256],"seeds":[1,2,3,4,5,6,7,8,9,10],"blocks":6}' | tee "$GITHUB_WORKSPACE/work/full.txt"
+      - name: Archive diagnostics, including failed tests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reviewer-frozen-replay-diagnostics
+          path: |
+            work/input_hashes.txt
+            work/*.txt
+            work/source/GeoKhewat_artifact_v10/layerb/out/bench/frozen_*.jsonl
+            work/source/GeoKhewat_artifact_v10/layerb/out/frozen_traces/
+          if-no-files-found: warn
