@@ -1,0 +1,76 @@
+name: IJIES 3-org Caliper network smoke (independent)
+on:
+  push:
+    branches: [ijies-reviewer-revision-2026-11-10]
+    paths: [".github/workflows/ijies-caliper-smoke.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  real-three-org-caliper:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Unpack hashed sanitized v1.5.1 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          unzip -q research-artifacts/GeoKhewat_v1.5.1_Reviewer_Sanitized_Source_10Nov2026.zip -d work
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          p=pathlib.Path("work"); m=json.loads((p/"SHA256_MANIFEST.json").read_text())
+          for n,h in m["files"].items(): assert hashlib.sha256((p/n).read_bytes()).hexdigest()==h,n
+          PY
+      - name: Three-org native network with fresh runtime-only MSP credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash reviewer-revision/fabric3-bootstrap.sh
+      - name: Deploy committed GeoKhewat 1.5.1, with pinned Node dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          NET="$PWD/work/v1.5.1/fabric_native"
+          source "$NET/runtime-env.sh"
+          source "$NET/env.sh"
+          ( cd work/v1.5.1/chaincode && npm ci --no-audit --no-fund )
+          CONFIG='{"strategy":"GKCR","precision":8,"cover":"poly","eps":0.01,"roles":{"admin":["SurveyMSP"],"survey":["SurveyMSP"],"revenue":["RevenueMSP"],"registration":["RegistrationMSP"]}}'
+          CC_DIR="$GITHUB_WORKSPACE/work/v1.5.1/chaincode" \
+            bash "$NET/deploy_cc.sh" gkcr 9101 "$CONFIG" | tee "$NET/artifacts/caliper-deploy.txt"
+      - name: Caliper 0.6.0 gateway 4 TPS synthetic registration smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          NET="$PWD/work/v1.5.1/fabric_native"
+          source "$NET/runtime-env.sh"
+          cd "$NET/caliper"
+          npm ci --no-audit --no-fund
+          GK_NONCE=109 npx caliper launch manager \
+            --caliper-workspace . --caliper-networkconfig networks/geokhewat.yaml \
+            --caliper-benchconfig benchmarks/smoke.yaml \
+            --caliper-flow-only-test --caliper-fabric-gateway-enabled \
+            --caliper-report-path "$NET/artifacts/caliper-smoke.html" \
+            2>&1 | tee "$NET/artifacts/caliper-smoke.log"
+          test -s "$NET/artifacts/caliper-smoke.html"
+      - name: Collect safe results (never certificates or secret keys)
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          NET="$PWD/work/v1.5.1/fabric_native"
+          mkdir -p caliper-evidence
+          for p in fabric-binary-sha256.txt configtxgen-stdout.txt bootstrap-status.txt caliper-deploy.txt caliper-smoke.log caliper-smoke.html; do
+             [ -f "$NET/artifacts/$p" ] && cp "$NET/artifacts/$p" caliper-evidence/ || true
+          done
+          echo "No MSP materials, TLS keys, or peer private logs included."
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: three-org-caliper-smoke-evidence
+          path: caliper-evidence/
+          if-no-files-found: warn
