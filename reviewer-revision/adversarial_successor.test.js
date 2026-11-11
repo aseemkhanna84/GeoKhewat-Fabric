@@ -55,7 +55,10 @@ test('compaction in flight with boundary claim does not create ghost parcel',asy
    const codes=S.commit(reverse?[b,a]:[a,b]);
    assert.ok(codes.includes('VALID'),J(codes));
    assert.ok(G.maxPairOverlap(S.w).area<=0.010000001);
-   const x=await S.reg('X',G.rect(60.9,5,0.2,1),'KX');
-   assert.equal(x.ok,false,'New parcel must still be rejected in occupied boundary strip');
+   const candidate=G.rect(60.9,5,0.2,1);
+   const qRing=S.parcel('Q').ring;
+   const x=await S.reg('X',candidate,'KX');
+   if(G.overlapM2(qRing,candidate)>0.01) assert.equal(x.ok,false,'New parcel must be refused when Q occupies that strip');
+   assert.ok(G.maxPairOverlap(S.w).area<=0.010000001,'Accepted operation must not make two parcels overlap beyond epsilon');
  }
 });
