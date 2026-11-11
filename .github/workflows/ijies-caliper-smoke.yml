@@ -49,6 +49,10 @@ jobs:
           NET="$PWD/work/v1.5.1/fabric_native"
           source "$NET/runtime-env.sh"
           cd "$NET/caliper"
+          # Archived npm lockfile was omitted from the public source subset.
+          # Resolve a new lock once, preserve it with this run and install from it.
+          npm install --package-lock-only --no-audit --no-fund
+          sha256sum package-lock.json | tee "$NET/artifacts/caliper-npm-lock-sha256.txt"
           npm ci --no-audit --no-fund
           GK_NONCE=109 npx caliper launch manager \
             --caliper-workspace . --caliper-networkconfig networks/geokhewat.yaml \
@@ -64,9 +68,10 @@ jobs:
           set +e
           NET="$PWD/work/v1.5.1/fabric_native"
           mkdir -p caliper-evidence
-          for p in fabric-binary-sha256.txt configtxgen-stdout.txt bootstrap-status.txt caliper-deploy.txt caliper-smoke.log caliper-smoke.html; do
+          for p in fabric-binary-sha256.txt configtxgen-stdout.txt bootstrap-status.txt caliper-deploy.txt caliper-npm-lock-sha256.txt caliper-smoke.log caliper-smoke.html; do
              [ -f "$NET/artifacts/$p" ] && cp "$NET/artifacts/$p" caliper-evidence/ || true
           done
+          [ -f "$NET/caliper/package-lock.json" ] && cp "$NET/caliper/package-lock.json" caliper-evidence/caliper-package-lock.json || true
           echo "No MSP materials, TLS keys, or peer private logs included."
       - uses: actions/upload-artifact@v4
         if: always()
