@@ -42,7 +42,10 @@ jobs:
         run: |
           set +e
           mkdir -p safe-diagnostics
-          cp work/v1.5.1/fabric_native/artifacts/{fabric-binary-sha256.txt,cryptogen-stdout.txt,configtxgen-stdout.txt,channel-info.txt,bootstrap-status.txt} safe-diagnostics/ 2>/dev/null
+          for n in fabric-binary-sha256.txt cryptogen-stdout.txt configtxgen-stdout.txt channel-info.txt bootstrap-status.txt; do
+            test -f "work/v1.5.1/fabric_native/artifacts/$n" && cp "work/v1.5.1/fabric_native/artifacts/$n" safe-diagnostics/ || true
+          done
+          true
           # Avoid uploading crypto/, runtime-env.sh or peer/orderer logs (may contain secrets).
       - uses: actions/upload-artifact@v4
         if: always()
