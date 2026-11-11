@@ -46,7 +46,7 @@ jobs:
           (cd "$NET/client" && npm ci --no-audit --no-fund)
           cd "$NET"
           R='"roles":{"admin":["SurveyMSP"],"survey":["SurveyMSP"],"registration":["RegistrationMSP"],"revenue":["RevenueMSP"]}'
-          CC_DIR="$GITHUB_WORKSPACE/work/v1.5.1/chaincode" ./deploy_cc.sh gkcr 9101 "{\"strategy\":\"GKCR\",\"precision\":8,\"cover\":\"poly\",\"eps\":0.01,$R}" \
+          CC_DIR="$GITHUB_WORKSPACE/work/v1.5.1/chaincode" bash ./deploy_cc.sh gkcr 9101 "{\"strategy\":\"GKCR\",\"precision\":8,\"cover\":\"poly\",\"eps\":0.01,$R}" \
             > "$GITHUB_WORKSPACE/work/evidence/deploy_gkcr.log" 2>&1
           source "$NET/env.sh"
           peer_env survey Admin
