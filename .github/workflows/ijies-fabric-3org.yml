@@ -34,16 +34,19 @@ jobs:
           PY
       - name: Bootstrap ephemeral native Fabric 2.5.16 network with three organizations
         shell: bash
-        run: bash reviewer-revision/portable_fabric_bootstrap.sh
+        run: bash reviewer-revision/fabric3-bootstrap.sh
       - name: Deploy GeoKhewat v1.5.1 chaincode as a service
         shell: bash
         run: |
           set -euo pipefail
-          NET="$GITHUB_WORKSPACE/work/fabric_native"
+          NET="$GITHUB_WORKSPACE/work/v1.5.1/fabric_native"
+          source "$NET/runtime-env.sh"
           source "$NET/env.sh"
+          (cd "$GITHUB_WORKSPACE/work/v1.5.1/chaincode" && npm ci --no-audit --no-fund)
+          (cd "$NET/client" && npm ci --no-audit --no-fund)
           cd "$NET"
           R='"roles":{"admin":["SurveyMSP"],"survey":["SurveyMSP"],"registration":["RegistrationMSP"],"revenue":["RevenueMSP"]}'
-          ./deploy_cc.sh gkcr 9101 "{\"strategy\":\"GKCR\",\"precision\":8,\"cover\":\"poly\",\"eps\":0.01,$R}" \
+          CC_DIR="$GITHUB_WORKSPACE/work/v1.5.1/chaincode" ./deploy_cc.sh gkcr 9101 "{\"strategy\":\"GKCR\",\"precision\":8,\"cover\":\"poly\",\"eps\":0.01,$R}" \
             > "$GITHUB_WORKSPACE/work/evidence/deploy_gkcr.log" 2>&1
           source "$NET/env.sh"
           peer_env survey Admin
@@ -53,7 +56,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          NET="$GITHUB_WORKSPACE/work/fabric_native"
+          NET="$GITHUB_WORKSPACE/work/v1.5.1/fabric_native"
+          mkdir -p "$GITHUB_WORKSPACE/work/v1.5.1/chaincode_v14"
+          ln -s ../chaincode "$GITHUB_WORKSPACE/work/v1.5.1/chaincode_v14/geokhewat-chaincode"
+          source "$NET/runtime-env.sh"
           node reviewer-revision/fabric_3org_smoke.js "$NET" \
             | tee "$GITHUB_WORKSPACE/work/evidence/three_org_smoke_stdout.txt"
       - name: Publish nonsecret logs, even on failure
@@ -63,9 +69,6 @@ jobs:
           name: ijies-native-fabric-three-org-diagnostics
           path: |
             work/evidence/*
-            work/fabric_native/logs/start.txt
-            work/fabric_native/logs/peer-*.log
-            work/fabric_native/logs/orderer.log
-            work/fabric_native/logs/cc_gkcr.log
-            work/fabric_native/logs/deploy_gkcr.log
+            work/v1.5.1/fabric_native/artifacts/bootstrap-status.txt
+            work/v1.5.1/fabric_native/artifacts/channel-info.txt
           if-no-files-found: warn
