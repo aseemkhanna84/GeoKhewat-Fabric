@@ -1,0 +1,52 @@
+name: IJIES three-organisation Fabric v2.5.16 bootstrap
+on:
+  push:
+    branches: [ijies-reviewer-revision-2026-11-10]
+    paths:
+      - ".github/workflows/ijies-fabric3-bootstrap.yml"
+      - "reviewer-revision/fabric3-**"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-fabric-three-org:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Unpack pinned and hashed sanitized GeoKhewat source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          unzip -q research-artifacts/GeoKhewat_v1.5.1_Reviewer_Sanitized_Source_10Nov2026.zip -d work
+          python3 - <<'PY'
+          import pathlib,json,hashlib
+          p=pathlib.Path("work")
+          m=json.loads((p/"SHA256_MANIFEST.json").read_text())
+          for n,h in m["files"].items():
+            assert hashlib.sha256((p/n).read_bytes()).hexdigest()==h,n
+          print("SOURCE_HASHES_PASS",len(m["files"]))
+          PY
+      - name: Ephemeral crypto and native Fabric three-organisation network
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash reviewer-revision/fabric3-bootstrap.sh
+      - name: Preserve safe diagnostics (no MSP keys or certs)
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p safe-diagnostics
+          cp work/v1.5.1/fabric_native/artifacts/{fabric-binary-sha256.txt,cryptogen-stdout.txt,configtxgen-stdout.txt,channel-info.txt,bootstrap-status.txt} safe-diagnostics/ 2>/dev/null
+          # Avoid uploading crypto/, runtime-env.sh or peer/orderer logs (may contain secrets).
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fabric3-portable-bootstrap-diagnostics
+          path: safe-diagnostics/
+          if-no-files-found: warn
