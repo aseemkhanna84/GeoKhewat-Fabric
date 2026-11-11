@@ -13,6 +13,11 @@ curl -fLsS --retry 4 --retry-delay 3 \
   -o "$NET/fabric-bin.tar.gz"
 sha256sum "$NET/fabric-bin.tar.gz" | tee "$NET/artifacts/fabric-binary-sha256.txt"
 tar -xzf "$NET/fabric-bin.tar.gz" -C "$NET"
+echo "==== BINARY TAR LAYOUT ===="
+tar -tf "$NET/fabric-bin.tar.gz" | head -35 || true
+echo "==== NET bin CONFIG directories ===="
+ls -lah "$NET" "$NET/bin" "$NET/fabric" || true
+find "$NET" -maxdepth 3 -type f -name cryptogen -o -name peer | head -20
 test -x "$NET/bin/cryptogen"
 mkdir -p "$NET/fabric"
 ln -s "$NET/bin" "$NET/fabric/bin"
