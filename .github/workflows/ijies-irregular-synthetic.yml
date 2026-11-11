@@ -1,0 +1,55 @@
+name: IJIES irregular synthetic cadastral corpus integrity
+on:
+  push:
+    branches: [ijies-reviewer-revision-2026-11-10]
+    paths:
+      - ".github/workflows/ijies-irregular-synthetic.yml"
+      - "reviewer-revision/irregular_synthetic_cadastre.js"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  generate-and-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Prepare original pinned chaincode dependency tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -q research-artifacts/GeoKhewat_v1.5.1_Reviewer_Sanitized_Source_10Nov2026.zip -d work
+          cd work/v1.5.1/chaincode
+          npm ci --no-audit --no-fund
+      - name: Build and verify 3 reproducible 576-parcel irregular synthetic corpora
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/reviewer-revision work/irregular_synthetic_output
+          cp reviewer-revision/irregular_synthetic_cadastre.js work/reviewer-revision/
+          node --check work/reviewer-revision/irregular_synthetic_cadastre.js
+          for seed in 17 23 29; do
+            node work/reviewer-revision/irregular_synthetic_cadastre.js "$seed" "work/irregular_synthetic_output/seed-$seed.geojson" | tee "work/irregular_synthetic_output/seed-$seed-validation.txt"
+          done
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          p=pathlib.Path('work/irregular_synthetic_output')
+          h=[]
+          for f in sorted(p.glob('seed-*.geojson')):
+            d=json.loads(f.read_text())
+            assert len(d['features'])==576
+            assert all(x['properties']['source']=='synthetic_shared_vertex_jitter' for x in d['features'])
+            h.append(d['properties']['sha256'])
+          assert len(set(h))==3,('Seed-specific fixtures were identical',h)
+          print('IRREGULAR_FIXTURE_DISTINCT_SEEDS_PASS',h)
+          PY
+      - name: Upload generated synthetic-only GeoJSON and exact-overlap counts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ijies-irregular-synthetic-576
+          path: work/irregular_synthetic_output/
+          if-no-files-found: warn
