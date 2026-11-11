@@ -79,13 +79,73 @@ jobs:
             grep -q 'NETTEST01' "$NET/artifacts/synthetic-query-$org.json"
           done
           echo "THREE_ORG_CHAINCODE_REGISTER_QUERY=PASS" | tee "$NET/artifacts/chaincode-smoke-status.txt"
+      - name: Deploy five baseline variants and SBE/box variants on the same network
+        shell: bash
+        run: |
+          set -euo pipefail
+          NET="$PWD/work/v1.5.1/fabric_native"
+          source "$NET/runtime-env.sh"
+          source "$NET/env.sh"
+          ROLES='"roles":{"admin":["SurveyMSP"],"survey":["SurveyMSP"],"registration":["RegistrationMSP"],"revenue":["RevenueMSP"]}'
+          run_deploy() {
+            local name="$1" port="$2" cfg="$3"
+            echo "Deploying $name on network (no synthetic output substituted)"
+            CC_DIR="$GITHUB_WORKSPACE/work/v1.5.1/chaincode" \
+              bash "$NET/deploy_cc.sh" "$name" "$port" "$cfg" | tee "$NET/artifacts/deploy-$name.txt"
+          }
+          run_deploy gkc 9102 "{\"strategy\":\"GKC\",\"precision\":8,\"cover\":\"poly\",$ROLES}"
+          run_deploy gkf 9103 "{\"strategy\":\"GKF\",\"precision\":8,\"cover\":\"poly\",$ROLES}"
+          run_deploy b3 9104 "{\"strategy\":\"B3\",\"research\":true,\"precision\":8,$ROLES}"
+          run_deploy b2 9105 "{\"strategy\":\"B2\",\"research\":true,\"precision\":8,$ROLES}"
+          run_deploy gkcrsbe 9106 "{\"strategy\":\"GKCR\",\"precision\":8,\"cover\":\"poly\",\"sbe\":true,$ROLES}"
+          run_deploy gkcrbox 9107 "{\"strategy\":\"GKCR\",\"precision\":8,\"cover\":\"bbox\",$ROLES}"
+      - name: Run deployed v1.5.1 functional, adversarial, roles, SBE and concurrent suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          NET="$PWD/work/v1.5.1/fabric_native"
+          source "$NET/runtime-env.sh"
+          # v1.3 defect replay is excluded: legacy 1.3 source is NOT in the approved archive.
+          sed -i "s/await v13replay();/console.log('EXCLUDED: v1.3 legacy defect replay, no deployable source');/" "$NET/client/fabric_tests.js"
+          cd "$NET/client"
+          GK_PAIRS=3 GK_ONLY=all GK_RUN=portable_v151 node fabric_tests.js | tee "$NET/artifacts/fabric-v151-test-stdout.txt"
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          p=Path("../results/fabric_v14_results_portable_v151.json")
+          d=json.loads(p.read_text())
+          tests=d["tests"]
+          passed=[x for x in tests if x["pass"]]
+          failed=[x for x in tests if not x["pass"]]
+          print("NEW_DEPLOYED_CASES",len(tests),"PASSED",len(passed),"FAILED",len(failed))
+          for x in failed: print("FAILED_CASE",x["id"],x["chaincode"],str(x["observed"])[:280])
+          assert len(tests)>10, "Incomplete deployed test collection"
+          assert len(failed)==0, "At least one deployed regression failed"
+          PY
+          cp ../results/fabric_v14_results_portable_v151.json "$GITHUB_WORKSPACE/safe-diagnostics/fabric-v151-results.json"
+      - name: Caliper 0.6.0 3-org smoke at 4 offered TPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          NET="$PWD/work/v1.5.1/fabric_native"
+          source "$NET/runtime-env.sh"
+          cd "$NET/caliper"
+          npm ci --no-audit --no-fund
+          GK_NONCE=109 npx caliper launch manager \
+             --caliper-workspace . --caliper-networkconfig networks/geokhewat.yaml \
+             --caliper-benchconfig benchmarks/smoke.yaml \
+             --caliper-flow-only-test --caliper-fabric-gateway-enabled \
+             --caliper-report-path "$NET/artifacts/caliper-smoke.html" \
+             2>&1 | tee "$NET/artifacts/caliper-smoke.log"
+          test -s "$NET/artifacts/caliper-smoke.html"
       - name: Preserve safe diagnostics (no MSP keys or certs)
         if: always()
         shell: bash
         run: |
           set +e
           mkdir -p safe-diagnostics
-          for n in fabric-binary-sha256.txt cryptogen-stdout.txt configtxgen-stdout.txt channel-info.txt bootstrap-status.txt deploy-stdout.txt synthetic-register.txt synthetic-query-survey.json synthetic-query-revenue.json synthetic-query-registration.json chaincode-smoke-status.txt; do
+          # Confidential MSP and TLS keys intentionally never exported.
+          for n in fabric-binary-sha256.txt cryptogen-stdout.txt configtxgen-stdout.txt channel-info.txt bootstrap-status.txt deploy-stdout.txt fabric-v151-test-stdout.txt synthetic-register.txt synthetic-query-survey.json synthetic-query-revenue.json synthetic-query-registration.json chaincode-smoke-status.txt caliper-smoke.log caliper-smoke.html; do
             test -f "work/v1.5.1/fabric_native/artifacts/$n" && cp "work/v1.5.1/fabric_native/artifacts/$n" safe-diagnostics/ || true
           done
           true
