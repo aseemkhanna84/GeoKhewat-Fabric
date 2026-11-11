@@ -1,0 +1,128 @@
+name: IJIES three-rate paired frozen mixed edits on real Fabric
+on:
+  push:
+    branches: [ijies-reviewer-revision-2026-11-10]
+    paths:
+      - ".github/workflows/ijies-fabric-rates.yml"
+      - "reviewer-revision/derive_rate_controlled_fabric.js"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paired-frozen-real-fabric:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Unpack and verify unchanged GeoKhewat v1.5.1 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/evidence
+          ZIP=research-artifacts/GeoKhewat_v1.5.1_Reviewer_Sanitized_Source_10Nov2026.zip
+          unzip -q "$ZIP" -d work
+          sha256sum "$ZIP" > work/evidence/source_sha256.txt
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path('work')
+          m=json.loads((p/'SHA256_MANIFEST.json').read_text())
+          for name,sha in m['files'].items():
+              assert hashlib.sha256((p/name).read_bytes()).hexdigest()==sha,name
+          print('ARCHIVE_HASHES_PASS',len(m['files']))
+          PY
+      - name: Bootstrap genuine native Fabric 2.5.16, three organizations
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash reviewer-revision/fabric3-bootstrap.sh
+      - name: Deploy both original v1.5.1 chaincode variants and prepare harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          NET="$GITHUB_WORKSPACE/work/v1.5.1/fabric_native"
+          source "$NET/runtime-env.sh"
+          (cd "$GITHUB_WORKSPACE/work/v1.5.1/chaincode" && npm ci --no-audit --no-fund)
+          (cd "$NET/client" && npm ci --no-audit --no-fund)
+          ROLES='"roles":{"admin":["SurveyMSP"],"survey":["SurveyMSP"],"registration":["RegistrationMSP"],"revenue":["RevenueMSP"]}'
+          for spec in "gkf10:9101:GKF" "gkcr10:9102:GKCR" "gkf20:9103:GKF" "gkcr20:9104:GKCR" "gkf40:9105:GKF" "gkcr40:9106:GKCR"; do
+            IFS=: read -r name port strategy <<< "$spec"
+            CC_DIR="$GITHUB_WORKSPACE/work/v1.5.1/chaincode" bash "$NET/deploy_cc.sh" "$name" "$port" "{\"strategy\":\"$strategy\",\"precision\":8,\"cover\":\"poly\",\"eps\":0.01,$ROLES}" > "work/evidence/deploy-$name.log" 2>&1
+          done
+          source "$NET/env.sh"
+          peer_env survey Admin
+          peer lifecycle chaincode querycommitted -C landrecords --name gkf10 > work/evidence/gkf_committed.txt
+          peer lifecycle chaincode querycommitted -C landrecords --name gkcr10 > work/evidence/gkcr_committed.txt
+          mkdir -p "$GITHUB_WORKSPACE/work/v1.5.1/chaincode_v14"
+          ln -s ../chaincode "$GITHUB_WORKSPACE/work/v1.5.1/chaincode_v14/geokhewat-chaincode"
+          cp "$GITHUB_WORKSPACE/reviewer-revision/frozen_mixed_loadgen.js" "$NET/client/frozen_mixed_loadgen.js"
+          node reviewer-revision/derive_rate_controlled_fabric.js "$NET/client/frozen_mixed_loadgen.js"\n          node --check "$NET/client/frozen_mixed_loadgen.js"
+          lscpu | grep -E '^Model name:|^CPU\(s\):' > work/evidence/cpu.txt
+          free -m > work/evidence/memory.txt
+      - name: Execute 10/20/40 offered TPS as independent matched per-rate chaincodes
+        shell: bash
+        run: |
+          set -euo pipefail
+          NET="$GITHUB_WORKSPACE/work/v1.5.1/fabric_native"
+          source "$NET/runtime-env.sh"
+          GEN="$NET/client/frozen_mixed_loadgen.js"
+          for rate in 10 20 40; do
+            for seed in 17 23 29; do
+              node "$GEN" "{\\"mode\\":\\"prepare\\",\\"seed\\":$seed,\\"rate\\":$rate}" | tee "work/evidence/trace-$rate-$seed.txt"
+              if [ "$seed" = "23" ]; then order="gkcr$rate gkf$rate"; else order="gkf$rate gkcr$rate"; fi
+              for cc in $order; do
+                echo "RATE_CONTROLLED_NETWORK rate=$rate seed=$seed cc=$cc"
+                node "$GEN" "{\\"mode\\":\\"run\\",\\"seed\\":$seed,\\"cc\\":\\"$cc\\",\\"rate\\":$rate}" | tee "work/evidence/run-$rate-$seed-$cc.txt"
+              done
+            done
+          done
+      - name: Verify matched traces and initial world states for all 3x3x2 runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,json,csv,statistics
+          p=pathlib.Path('work/v1.5.1/fabric_native/results/frozen_reviewer')
+          rows=[json.loads(f.read_text()) for f in sorted(p.glob('frozen_*.json'))]
+          assert len(rows)==18,('Expected exactly 18 runs',len(rows))
+          by={(r['offered_scheduled_tps'],r['seed'],r['cc']):r for r in rows}
+          assert len(by)==18
+          columns=['rate','seed','strategy','offered','submitted','ordered','valid','mvcc','endorsement_refused','throughput_tps','valid_p95_ms','invalid_p95_ms','trace_sha256','initial_sha256']
+          with open('work/evidence/rate_pairs_summary.csv','w',newline='') as f:
+            w=csv.DictWriter(f,fieldnames=columns);w.writeheader()
+            for rate in (10,20,40):
+              diffs=[]
+              for seed in (17,23,29):
+                a,b=by[(rate,seed,f'gkf{rate}')],by[(rate,seed,f'gkcr{rate}')]
+                assert a['trace_sha256']==b['trace_sha256'],('Unequal requests',rate,seed)
+                assert a['observed_initial_state_sha256']==b['observed_initial_state_sha256'],('Unequal initial ledger',rate,seed)
+                assert a['initial_fixture_sha256']==b['initial_fixture_sha256']
+                for r in (a,b):
+                  assert r['initial_parcels']==64,r
+                  assert r['offered']==100,r
+                  assert sum(r['codes'].values())==r['offered']
+                  assert r['committed']==r['codes'].get('VALID',0)
+                  assert 0<=r['committed']<=r['ordered_status_observed']<=r['submitted']<=r['offered']
+                  row=dict(rate=rate,seed=seed,strategy=r['cc'],offered=r['offered'],submitted=r['submitted'],ordered=r['ordered_status_observed'],valid=r['committed'],mvcc=r['codes'].get('MVCC_READ_CONFLICT',0),endorsement_refused=r['codes'].get('ENDORSEMENT_REFUSED',0),throughput_tps=r['valid_throughput_tps'],valid_p95_ms=r['latency_valid_ms']['p95'],invalid_p95_ms=r['latency_nonvalid_ms']['p95'],trace_sha256=r['trace_sha256'],initial_sha256=r['observed_initial_state_sha256'])
+                  w.writerow(row);print('VERIFIED_RATE_RUN',row)
+                diffs.append(b['committed']-a['committed'])
+              print('RATE_PAIRED_DIFFERENCES_PP',rate,diffs,'MEAN',statistics.mean(diffs))
+          print('REAL_FABRIC_RATE_SWEEP_PAIRED_TRACE_AND_ACCOUNTING_PASS')
+          PY
+      - name: Upload sanitized synthetic requests, transaction counts and raw latency samples
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ijies-three-rate-frozen-real-fabric
+          path: |
+            work/evidence/source_sha256.txt
+            work/evidence/cpu.txt
+            work/evidence/memory.txt
+            work/evidence/*committed.txt
+            work/evidence/trace-*.txt
+            work/evidence/run-*.txt
+            work/evidence/rate_pairs_summary.csv
+            work/v1.5.1/fabric_native/results/frozen_reviewer/
+          if-no-files-found: warn
