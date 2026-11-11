@@ -16,6 +16,7 @@ const replacements=[
  ['traceFile(seed)','traceFile(seed,rate)'],
  ['const due=t0+i*100;','const due=t0+i*(1000/rate);'],
  ['const measured=rows.filter(r=>r.i>=20);','const measured=rows.filter(r=>r.i>=tr.warmup*rate);'],
+ ["if(!['gkf','gkcr'].includes(cc))throw Error('cc must be gkf or gkcr');","if(!/^gk(f|cr)(10|20|40)$/.test(cc))throw Error('cc must be gkf{rate} or gkcr{rate}');"],
  ["run_id:'frozen_'+cc+'_seed'+seed","run_id:'frozen_'+cc+'_seed'+seed+'_rate'+rate"],
  ['offered_scheduled_tps:10,','offered_scheduled_tps:rate,'],
 ];
