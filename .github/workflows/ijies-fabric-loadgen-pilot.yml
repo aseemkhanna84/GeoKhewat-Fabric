@@ -52,6 +52,13 @@ jobs:
           peer_env survey Admin
           peer lifecycle chaincode querycommitted -C landrecords --name gkf | tee work/evidence/committed-gkf.txt
           peer lifecycle chaincode querycommitted -C landrecords --name gkcr | tee work/evidence/committed-gkcr.txt
+      - name: Restore archived client dependency using exact v1.5.1 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/work/v1.5.1/chaincode_v14"
+          ln -s ../chaincode "$GITHUB_WORKSPACE/work/v1.5.1/chaincode_v14/geokhewat-chaincode"
+          node -e "const p = require('./work/v1.5.1/chaincode_v14/geokhewat-chaincode/lib/exact.js'); if (typeof p.claimArea2 !== 'function') process.exit(1); console.log('Exact geometry module link restored from original pinned v1.5.1 source')"
       - name: Record runner resources and pilot protocol
         shell: bash
         run: |
