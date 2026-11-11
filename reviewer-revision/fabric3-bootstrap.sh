@@ -27,6 +27,17 @@ grep -rl '/home/claude/gk10' "$NET" --include='*.sh' --include='*.yaml' --includ
   xargs -r sed -i "s|/home/claude/gk10/chaincode_v14/geokhewat-chaincode|$ROOT/work/v1.5.1/chaincode|g; s|/home/claude/gk10/fabric_native|$NET|g"
 # Client source also uses absolute chaincode paths as a require() dependency.
 echo "Archived absolute paths replaced throughout the native client scripts."
+# Fabric core.yaml defaults snapshot root to /var/hyperledger; non-root CI runner cannot write there.
+python3 - "$NET/start_network.sh" <<'PY'
+import sys
+from pathlib import Path
+p=Path(sys.argv[1]); s=p.read_text()
+needle='CORE_PEER_FILESYSTEMPATH=$NET/data/peer-$org \\'
+assert needle in s, 'Peer filesystem stanza not found'
+s=s.replace(needle, 'CORE_PEER_FILESYSTEMPATH=$NET/data/peer-$org CORE_LEDGER_SNAPSHOTS_ROOTDIR=$NET/data/peer-$org/snapshots \\')
+p.write_text(s)
+PY
+
 # Allow archived native configuration to address peers by their TLS host names on loopback.
 printf '127.0.0.1 orderer.example.com peer0.survey.example.com peer0.revenue.example.com peer0.registration.example.com\n' |
   sudo tee -a /etc/hosts
