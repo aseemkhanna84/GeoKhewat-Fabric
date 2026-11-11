@@ -36,13 +36,56 @@ jobs:
         run: |
           set -euo pipefail
           bash reviewer-revision/fabric3-bootstrap.sh
+      - name: Deploy GeoKhewat v1.5.1 CCAAS and register synthetic parcel
+        shell: bash
+        run: |
+          set -euo pipefail
+          NET="$PWD/work/v1.5.1/fabric_native"
+          source "$NET/runtime-env.sh"
+          source "$NET/env.sh"
+          cd work/v1.5.1/chaincode
+          npm ci --no-audit --no-fund
+          cd ../fabric_native/client
+          npm ci --no-audit --no-fund
+          cd "$GITHUB_WORKSPACE"
+          CONFIG='{"strategy":"GKCR","precision":8,"cover":"poly","eps":0.01,"roles":{"admin":["SurveyMSP"],"survey":["SurveyMSP"],"revenue":["RevenueMSP"],"registration":["RegistrationMSP"]}}'
+          if ! CC_DIR="$GITHUB_WORKSPACE/work/v1.5.1/chaincode" \
+            bash "$NET/deploy_cc.sh" gkcr 9101 "$CONFIG" | tee "$NET/artifacts/deploy-stdout.txt"; then
+              echo "::error::CCAAS install/approve/commit failed"
+              grep -Ei 'error|failure|failed|invalid|not found|denied' "$NET/logs/deploy_gkcr.log" | tail -35 || true
+              tail -35 "$NET/logs/cc_gkcr.log" || true
+              exit 1
+          fi
+          source "$NET/env.sh"
+          peer_env survey Admin
+          REQ=$(python3 - <<'PY'
+          import json
+          ring=[[75.510,31.000],[75.511,31.000],[75.511,31.001],[75.510,31.001],[75.510,31.000]]
+          shares=[{"owner":"SYNTHETIC_A","num":"1","den":"1"}]
+          print(json.dumps({"Args":["RegisterParcel","NETTEST01","NETK01",json.dumps(ring),json.dumps(shares),"SYNTHETIC","[]"]}))
+          PY
+          )
+          peer chaincode invoke -C landrecords -n gkcr -o orderer.example.com:7050 \
+            --tls --cafile "$ORDERER_CA" \
+            --peerAddresses peer0.survey.example.com:7051 \
+            --tlsRootCertFiles "$CRYPTO/peerOrganizations/survey.example.com/peers/peer0.survey.example.com/tls/ca.crt" \
+            --peerAddresses peer0.revenue.example.com:8051 \
+            --tlsRootCertFiles "$CRYPTO/peerOrganizations/revenue.example.com/peers/peer0.revenue.example.com/tls/ca.crt" \
+            --waitForEvent -c "$REQ" | tee "$NET/artifacts/synthetic-register.txt"
+          for org in survey revenue registration; do
+            peer_env "$org" Admin
+            peer chaincode query -C landrecords -n gkcr \
+              -c '{"Args":["QueryParcel","NETTEST01"]}' | tee "$NET/artifacts/synthetic-query-$org.json"
+            grep -q 'NETTEST01' "$NET/artifacts/synthetic-query-$org.json"
+          done
+          echo "THREE_ORG_CHAINCODE_REGISTER_QUERY=PASS" | tee "$NET/artifacts/chaincode-smoke-status.txt"
       - name: Preserve safe diagnostics (no MSP keys or certs)
         if: always()
         shell: bash
         run: |
           set +e
           mkdir -p safe-diagnostics
-          for n in fabric-binary-sha256.txt cryptogen-stdout.txt configtxgen-stdout.txt channel-info.txt bootstrap-status.txt; do
+          for n in fabric-binary-sha256.txt cryptogen-stdout.txt configtxgen-stdout.txt channel-info.txt bootstrap-status.txt deploy-stdout.txt synthetic-register.txt synthetic-query-survey.json synthetic-query-revenue.json synthetic-query-registration.json chaincode-smoke-status.txt; do
             test -f "work/v1.5.1/fabric_native/artifacts/$n" && cp "work/v1.5.1/fabric_native/artifacts/$n" safe-diagnostics/ || true
           done
           true
