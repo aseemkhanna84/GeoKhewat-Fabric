@@ -122,6 +122,7 @@ jobs:
           assert len(tests)>10, "Incomplete deployed test collection"
           assert len(failed)==0, "At least one deployed regression failed"
           PY
+          mkdir -p "$GITHUB_WORKSPACE/safe-diagnostics"
           cp ../results/fabric_v14_results_portable_v151.json "$GITHUB_WORKSPACE/safe-diagnostics/fabric-v151-results.json"
       - name: Caliper 0.6.0 3-org smoke at 4 offered TPS
         shell: bash
