@@ -26,8 +26,7 @@ ln -s "$NET/config" "$NET/fabric/config"
 grep -rl '/home/claude/gk10' "$NET" --include='*.sh' --include='*.yaml' --include='*.js' |
   xargs -r sed -i "s|/home/claude/gk10/chaincode_v14/geokhewat-chaincode|$ROOT/work/v1.5.1/chaincode|g; s|/home/claude/gk10/fabric_native|$NET|g"
 # Client source also uses absolute chaincode paths as a require() dependency.
-grep -rl '/home/claude/gk10' "$NET/client" --include='*.js' |
-  xargs -r sed -i "s|/home/claude/gk10/chaincode_v14/geokhewat-chaincode|$ROOT/work/v1.5.1/chaincode|g"
+echo "Archived absolute paths replaced throughout the native client scripts."
 # Allow archived native configuration to address peers by their TLS host names on loopback.
 printf '127.0.0.1 orderer.example.com peer0.survey.example.com peer0.revenue.example.com peer0.registration.example.com\n' |
   sudo tee -a /etc/hosts
@@ -42,12 +41,8 @@ test -s "$NET/artifacts/landrecords.block"
 for msp in survey revenue registration; do
  test -f "$NET/crypto/peerOrganizations/$msp.example.com/users/Admin@$msp.example.com/msp/config.yaml"
 done
-# Configure CCAAS external builder plugin (pinned to Fabric Samples v2.5.16 when available).
-git clone --depth 1 --branch v2.5.16 https://github.com/hyperledger/fabric-samples.git "$NET/fabric-samples" || 
-  git clone --depth 1 https://github.com/hyperledger/fabric-samples.git "$NET/fabric-samples"
-mkdir -p "$NET/builders"
-cp -a "$NET/fabric-samples/test-network/builders/ccaas" "$NET/builders/ccaas"
-chmod +x "$NET/builders/ccaas/bin/"*
+# Official Fabric binary release includes the CCAAS builder.
+test -x "$NET/builders/ccaas/bin/detect"
 export CORE_CHAINCODE_EXTERNALBUILDERS="[{\"name\":\"ccaas_builder\",\"path\":\"$NET/builders/ccaas\",\"propagateEnvironment\":[\"CHAINCODE_AS_A_SERVICE_BUILDER_CONFIG\"]}]"
 echo "CORE_CHAINCODE_EXTERNALBUILDERS=$CORE_CHAINCODE_EXTERNALBUILDERS" >> "$GITHUB_ENV"
 # Native peers need a proper command environment; saved as dotenv for later workflow steps.
