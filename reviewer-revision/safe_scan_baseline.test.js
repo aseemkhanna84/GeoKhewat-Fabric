@@ -12,9 +12,9 @@ test('SCAN_SAFE rejects overlaps without supplied neighbour IDs',async()=>{
 test('SCAN_SAFE allows released land while still rejecting active overlap',async()=>{
  const S=await fresh('SCAN_SAFE');
  assert.equal((await S.reg('A',G.rect(0,0,30,30))).ok,true);
- assert.equal((await S.rect('A',G.rect(0,0,20,30))).ok,true);
- assert.equal((await S.reg('B',G.rect(21,0,8,30))).ok,true,'Released land is unoccupied');
- assert.equal((await S.reg('C',G.rect(18,0,5,30))).ok,false,'Live A/B still protected');
+ assert.equal((await S.rect('A',G.rect(0,0,29.5,30))).ok,true,'Rectification of 1.67% area is within 5% limit');
+ assert.equal((await S.reg('B',G.rect(29.6,0,0.3,30))).ok,true,'Released strip is unoccupied');
+ assert.equal((await S.reg('C',G.rect(29.4,0,0.4,30))).ok,false,'Live A/B still protected');
  assert.ok(G.maxPairOverlap(S.w).area<=0.010000001);
 });
 test('SCAN_SAFE globally serializes concurrent disjoint writes',async()=>{
