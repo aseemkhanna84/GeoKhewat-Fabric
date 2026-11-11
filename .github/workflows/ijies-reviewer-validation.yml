@@ -76,8 +76,54 @@ jobs:
               print({k:r.get(k) for k in ("strategy","offered","endorsed","refused","mvcc","valid","trace_sha256")})
           print("FROZEN SMOKE: PASS, not a multi-host Fabric result or a safety proof")
           PY
+      - name: Run targeted adversarial successor and compaction tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp reviewer-revision/adversarial_successor.test.js work/reviewer-revision/adversarial_successor.test.js
+          cd work
+          node --test reviewer-revision/adversarial_successor.test.js | tee "$GITHUB_WORKSPACE/work/adversarial_stdout.txt"
+      - name: Run matched one-block experiments from equal initial geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp reviewer-revision/one_block_instrument.js work/reviewer-revision/one_block_instrument.js
+          cd work
+          node reviewer-revision/one_block_instrument.js
+          node --check v1.5.1/layerb/bench_one_block.js
+          cd v1.5.1/layerb
+          node bench_one_block.js '{"tag":"equal_start_one_block","frozen_trace":true,"trace_source":"GKCR:poly","strategies":["GKF:poly","GKCR:poly"],"B":[64,128,256],"seeds":[1,2,3,4,5,6,7,8,9,10],"blocks":1}' | tee "$GITHUB_WORKSPACE/work/equal_start_stdout.txt"
+      - name: Check equal starting geometry, shared traces and transaction accounting
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,pathlib
+          p=pathlib.Path("work/v1.5.1/layerb/out/bench/equal_start_one_block.jsonl")
+          rows=[json.loads(x) for x in p.read_text().splitlines() if x.strip()]
+          assert len(rows)==60,len(rows)
+          for size in (64,128,256):
+              for seed in range(1,11):
+                  pair=[r for r in rows if r['B']==size and r['seed']==seed]
+                  assert len(pair)==2,(size,seed)
+                  assert len({r['initial_geometry_sha256'] for r in pair})==1,(size,seed,"initial mismatch")
+                  assert len({r['trace_sha256'] for r in pair})==1,(size,seed,"trace mismatch")
+                  for r in pair:
+                      assert r['offered']==size,(size,seed,r['offered'])
+                      assert r['offered']==r['valid']+r['mvcc']+r['phantom']+r['refused'],(size,seed)
+          for size in (64,128,256):
+              print("B",size)
+              for strategy in ("GKF","GKCR"):
+                  grp=[r for r in rows if r['B']==size and r['strategy']==strategy]
+                  offered=sum(r["offered"] for r in grp)
+                  valid=sum(r["valid"] for r in grp)
+                  print(strategy,"offered",offered,"valid",valid,"yield",100*valid/offered,
+                        "mvcc",sum(r["mvcc"] for r in grp),
+                        "refused",sum(r["refused"] for r in grp))
+          print("Equal-initial-geometry one-block paired data VERIFIED; later-state effects excluded for this test only.")
+          PY
       - name: Run optional exploratory full replay
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.run_full) }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_full }}
         shell: bash
         run: |
           set -euo pipefail
@@ -91,5 +137,6 @@ jobs:
           path: |
             work/*stdout.txt
             work/v1.5.1/layerb/out/bench/frozen_*.jsonl
+            work/v1.5.1/layerb/out/bench/equal_start_one_block.jsonl
             work/v1.5.1/layerb/out/frozen_traces/
           if-no-files-found: warn
