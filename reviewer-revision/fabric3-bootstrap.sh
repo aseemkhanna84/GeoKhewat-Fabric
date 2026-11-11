@@ -55,7 +55,15 @@ export no_proxy="\$NO_PROXY"
 ENV
 source "$NET/runtime-env.sh"
 # Persist peer and orderer logs for all failures; these can contain identities and must be scrubbed before publishing.
-bash "$NET/start_network.sh"
+if ! bash "$NET/start_network.sh"; then
+  echo "::error::Native Fabric network bootstrap failed; peer/orderer startup diagnosis follows"
+  for log in "$NET/logs/orderer.log" "$NET/logs/peer-survey.log" "$NET/logs/peer-revenue.log" "$NET/logs/peer-registration.log"; do
+    [ -f "$log" ] || continue
+    echo "---- $(basename "$log") fatal/error lines ----"
+    grep -Ei 'fatal|panic|err(or)?|failed|invalid|unsupported|refused' "$log" | tail -30 || true
+  done
+  exit 1
+fi
 source "$NET/env.sh"
 peer_env survey Admin
 peer channel getinfo -c landrecords | tee "$NET/artifacts/channel-info.txt"
