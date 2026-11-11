@@ -1,4 +1,4 @@
-# IJIES 20267430: Equal-start and adversarial checks — independent rerun confirmation
+# IJIES 20267430: Equal-start and adversarial checks — repeat-CI confirmation
 
 **Executed on GitHub Actions 11 Nov 2026**  
 Run: https://github.com/aseemkhanna84/GeoKhewat-Fabric/actions/runs/43037795097  
@@ -23,7 +23,7 @@ Source: unchanged v1.5.1 chaincode from published SHA-verified sanitized bundle;
 
 ## Scientific limits / next evidence gate
 
-This rerun is an **in-memory Fabric-semantics simulator**, NOT an additional native three-organisation Fabric deployment. The successful 78/78 current-version network cases and separate three-pair native Fabric mixed workloads are documented in their own evidence reports; they are not pooled with these 60 simulator runs.
+This repeat CI run used the same controlled protocol and input-generating code; it is not an independently designed experiment. It is an **in-memory Fabric-semantics simulator**, NOT an additional native three-organisation Fabric deployment. The successful 78/78 current-version network cases and separate three-pair native Fabric mixed workloads are documented in their own evidence reports; they are not pooled with these 60 simulator runs.
 
 Source code describes inverse-projection densification and padded geohash coverage, but it does not provide a mathematical guarantee of conservative coverage for every polygon segment. The proof/counterexample obligation therefore remains open. Also still open: larger independently generated irregular corpus, safe baseline with independently provable conflict protection, multi-host deployment and latency sensitivity, and a precise point-by-point reviewer response. Do not describe the revision as acceptance-ready solely because these CI tests pass.
 
