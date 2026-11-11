@@ -11,7 +11,7 @@ permissions:
 jobs:
   native-fabric-three-org:
     runs-on: ubuntu-22.04
-    timeout-minutes: 40
+    timeout-minutes: 85
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -128,6 +128,7 @@ jobs:
           PY
           mkdir -p "$GITHUB_WORKSPACE/safe-diagnostics"
           cp ../results/fabric_v14_results_portable_v151.json "$GITHUB_WORKSPACE/safe-diagnostics/fabric-v151-results.json"
+          sha256sum ../results/fabric_v14_results_portable_v151.json | tee "$GITHUB_WORKSPACE/safe-diagnostics/fabric-v151-results.sha256"
       - name: Caliper 0.6.0 3-org smoke at 4 offered TPS
         shell: bash
         run: |
@@ -135,6 +136,10 @@ jobs:
           NET="$PWD/work/v1.5.1/fabric_native"
           source "$NET/runtime-env.sh"
           cd "$NET/caliper"
+          # Original Caliper lockfile was excluded from the public source subset.
+          # Generate a new dependency lock and archive its checksum as part of this run.
+          npm install --package-lock-only --no-audit --no-fund
+          sha256sum package-lock.json | tee "$NET/artifacts/caliper-npm-lock-sha256.txt"
           npm ci --no-audit --no-fund
           GK_NONCE=109 npx caliper launch manager \
              --caliper-workspace . --caliper-networkconfig networks/geokhewat.yaml \
@@ -150,9 +155,10 @@ jobs:
           set +e
           mkdir -p safe-diagnostics
           # Confidential MSP and TLS keys intentionally never exported.
-          for n in fabric-binary-sha256.txt cryptogen-stdout.txt configtxgen-stdout.txt channel-info.txt bootstrap-status.txt deploy-stdout.txt fabric-v151-test-stdout.txt synthetic-register.txt synthetic-query-survey.json synthetic-query-revenue.json synthetic-query-registration.json chaincode-smoke-status.txt caliper-smoke.log caliper-smoke.html; do
+          for n in fabric-binary-sha256.txt cryptogen-stdout.txt configtxgen-stdout.txt channel-info.txt bootstrap-status.txt deploy-stdout.txt fabric-v151-test-stdout.txt caliper-npm-lock-sha256.txt synthetic-register.txt synthetic-query-survey.json synthetic-query-revenue.json synthetic-query-registration.json chaincode-smoke-status.txt caliper-smoke.log caliper-smoke.html; do
             test -f "work/v1.5.1/fabric_native/artifacts/$n" && cp "work/v1.5.1/fabric_native/artifacts/$n" safe-diagnostics/ || true
           done
+          test ! -f work/v1.5.1/fabric_native/caliper/package-lock.json || cp work/v1.5.1/fabric_native/caliper/package-lock.json safe-diagnostics/caliper-package-lock.json
           true
           # Avoid uploading crypto/, runtime-env.sh or peer/orderer logs (may contain secrets).
       - uses: actions/upload-artifact@v4
