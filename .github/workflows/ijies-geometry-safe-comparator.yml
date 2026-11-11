@@ -1,0 +1,105 @@
+name: IJIES independent geometry audit and safe reference comparator
+on:
+  push:
+    branches: [ijies-reviewer-revision-2026-11-10]
+    paths:
+      - ".github/workflows/ijies-geometry-safe-comparator.yml"
+      - "reviewer-revision/independent_coverage_diagnostic.js"
+      - "reviewer-revision/safe_scan_baseline_patch.js"
+      - "reviewer-revision/safe_scan_baseline.test.js"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  geometry-scan-and-controlled-comparator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify sanitized source and pinned dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          unzip -q research-artifacts/GeoKhewat_v1.5.1_Reviewer_Sanitized_Source_10Nov2026.zip -d work
+          sha256sum research-artifacts/GeoKhewat_v1.5.1_Reviewer_Sanitized_Source_10Nov2026.zip > work/baseline_archive.sha256
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path('work');m=json.loads((p/'SHA256_MANIFEST.json').read_text())
+          for n,h in m['files'].items(): assert hashlib.sha256((p/n).read_bytes()).hexdigest()==h,n
+          print("ORIGINAL_ARCHIVE_FILES_VERIFIED",len(m['files']))
+          PY
+          cd work/v1.5.1/chaincode
+          npm ci --no-audit --no-fund
+          npm test | tee "$GITHUB_WORKSPACE/work/original_tests.log"
+      - name: Independent dense sampling of claim and footprint geohash coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/reviewer-revision
+          cp reviewer-revision/independent_coverage_diagnostic.js work/reviewer-revision/
+          node --check work/reviewer-revision/independent_coverage_diagnostic.js
+          node work/reviewer-revision/independent_coverage_diagnostic.js | tee work/geometry_coverage_audit.log
+      - name: Create derived exact-global-scan reference (original archive preserved)
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check reviewer-revision/safe_scan_baseline_patch.js
+          node reviewer-revision/safe_scan_baseline_patch.js work/v1.5.1/chaincode/lib/geokhewat-contract.js | tee work/scan_patch_sha.txt
+          node --check work/v1.5.1/chaincode/lib/geokhewat-contract.js
+          cp reviewer-revision/safe_scan_baseline.test.js work/reviewer-revision/
+          node --test work/reviewer-revision/safe_scan_baseline.test.js | tee work/scan_safe_tests.log
+      - name: Equal-start, frozen-trace comparison with a full-scan safety comparator
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp work/reviewer-revision/bench_cc_frozen_trace_EXPERIMENTAL.js work/v1.5.1/layerb/bench_cc.js
+          mkdir -p work/v1.5.1/chaincode_v14
+          ln -s ../chaincode work/v1.5.1/chaincode_v14/geokhewat-chaincode
+          cp reviewer-revision/one_block_instrument.js work/reviewer-revision/
+          (cd work/v1.5.1/layerb && npm ci --no-audit --no-fund)
+          node work/reviewer-revision/one_block_instrument.js
+          cd work/v1.5.1/layerb
+          node bench_one_block.js '{"tag":"safe_scan_reference","frozen_trace":true,"trace_source":"GKCR:poly","strategies":["GKF:poly","GKC:poly","GKCR:poly","SCAN_SAFE:poly"],"B":[16,32],"seeds":[1,2],"blocks":1}' | tee "$GITHUB_WORKSPACE/work/comparator_stdout.log"
+      - name: Verify matched requests and exact initial parcel geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,json,collections,csv
+          p=pathlib.Path('work/v1.5.1/layerb/out/bench/safe_scan_reference.jsonl')
+          records=[json.loads(x) for x in p.read_text().splitlines() if x.strip()]
+          assert len(records)==16,('Expected 4 strategies x 2 seeds x 2 sizes',len(records))
+          pair=collections.defaultdict(dict)
+          for r in records:
+            assert r['offered']==r['B'],r
+            assert r['offered']==r['valid']+r['mvcc']+r['phantom']+r['refused'],r
+            assert r['initial_geometry_sha256'] and r['trace_sha256']
+            assert r['overlap']['pairs_over_eps']==0,r
+            pair[(r['B'],r['seed'])][r['strategy']]=r
+          with open('work/safe_scan_comparison.csv','w',newline='') as f:
+            w=csv.writer(f);w.writerow(['B','seed','strategy','offered','valid','mvcc','phantom','refused','initial_sha256','trace_sha256','index_bytes'])
+            for k,x in sorted(pair.items()):
+              assert set(x)=={'GKF','GKC','GKCR','SCAN_SAFE'},(k,x.keys())
+              assert len({r['initial_geometry_sha256'] for r in x.values()})==1,(k,'initial mismatch')
+              assert len({r['trace_sha256'] for r in x.values()})==1,(k,'trace mismatch')
+              for s,r in sorted(x.items()):
+                w.writerow([r['B'],r['seed'],s,r['offered'],r['valid'],r['mvcc'],r['phantom'],r['refused'],r['initial_geometry_sha256'],r['trace_sha256'],r['index'].get('index_bytes') if r.get('index') else ''])
+          print('MATCHED_BASELINE_4_STRATEGIES_PAIRS',len(pair))
+          PY
+      - name: Publish logs and machine-readable outputs even if tests fail
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ijies-geometry-safe-scan-comparator
+          path: |
+            work/*.log
+            work/*.txt
+            work/*.sha256
+            work/safe_scan_comparison.csv
+            work/v1.5.1/layerb/out/bench/safe_scan_reference.jsonl
+            work/v1.5.1/layerb/out/frozen_traces/
+          if-no-files-found: warn
