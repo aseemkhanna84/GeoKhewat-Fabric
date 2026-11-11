@@ -1,0 +1,114 @@
+name: IJIES equal-start and successor-adversarial checks
+on:
+  push:
+    branches: [ijies-reviewer-revision-2026-11-10]
+    paths:
+      - ".github/workflows/ijies-equal-start-adversarial.yml"
+      - "reviewer-revision/one_block_instrument.js"
+      - "reviewer-revision/adversarial_successor.test.js"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  controlled-experiments:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify and extract sanitized source
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -tq research-artifacts/GeoKhewat_v1.5.1_Reviewer_Sanitized_Source_10Nov2026.zip
+          mkdir -p work/reviewer-revision
+          unzip -q research-artifacts/GeoKhewat_v1.5.1_Reviewer_Sanitized_Source_10Nov2026.zip -d work
+          python3 - <<'PY'
+          import pathlib,json,hashlib
+          p=pathlib.Path('work')
+          m=json.loads((p/'SHA256_MANIFEST.json').read_text())
+          for name,h in m['files'].items():
+            f=p/name
+            assert f.exists(),name
+            assert hashlib.sha256(f.read_bytes()).hexdigest()==h,name
+          print('Source hashes checked:',len(m['files']))
+          PY
+          cp reviewer-revision/one_block_instrument.js work/reviewer-revision/
+          cp reviewer-revision/adversarial_successor.test.js work/reviewer-revision/
+          node --check work/reviewer-revision/one_block_instrument.js
+          node --check work/reviewer-revision/adversarial_successor.test.js
+      - name: Install pinned chaincode dependencies
+        run: |
+          set -euo pipefail
+          cd work/v1.5.1/chaincode
+          npm ci --no-audit --no-fund
+          npm test | tee "$GITHUB_WORKSPACE/work/base_tests.txt"
+      - name: Adversarial lineage/compaction test suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test work/reviewer-revision/adversarial_successor.test.js | tee work/adversarial_tests.txt
+      - name: Build one-block equal-start instrument
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/v1.5.1/chaincode_v14
+          ln -s ../chaincode work/v1.5.1/chaincode_v14/geokhewat-chaincode
+          cp work/reviewer-revision/bench_cc_frozen_trace_EXPERIMENTAL.js work/v1.5.1/layerb/bench_cc.js
+          node work/reviewer-revision/one_block_instrument.js
+          node --check work/v1.5.1/layerb/bench_one_block.js
+          cd work/v1.5.1/layerb
+          npm ci --no-audit --no-fund
+      - name: One-block equal-initial-state paired experiment
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work/v1.5.1/layerb
+          node bench_one_block.js '{"tag":"equal_start_one_block","frozen_trace":true,"trace_source":"GKCR:poly","strategies":["GKF:poly","GKCR:poly"],"B":[64,128,256],"seeds":[1,2,3,4,5,6,7,8,9,10],"blocks":1}' | tee "$GITHUB_WORKSPACE/work/one_block_stdout.txt"
+      - name: Verify initial map checksums and generate outcome table
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,json,collections,csv
+          inp=pathlib.Path("work/v1.5.1/layerb/out/bench/equal_start_one_block.jsonl")
+          rows=[json.loads(x) for x in inp.read_text().splitlines() if x.strip()]
+          assert len(rows)==60,len(rows)
+          pairs=collections.defaultdict(dict)
+          for r in rows:
+            k=(r['B'],r['seed'])
+            pairs[k][r['strategy']]=r
+            assert r['offered']==r['B'],r
+            assert r['valid']+r['mvcc']+r['phantom']+r['refused']==r['offered'],r
+          assert len(pairs)==30,len(pairs)
+          with open("work/one_block_paired.csv","w",newline="") as f:
+            w=csv.writer(f);w.writerow(["B","seed","GKF_valid","GKCR_valid","GKF_refused","GKCR_refused","GKF_mvcc","GKCR_mvcc","difference_pp","initial_geom_sha","request_trace_sha"])
+            for (B,seed),p in sorted(pairs.items()):
+              assert set(p)=={'GKF','GKCR'},p.keys()
+              a,b=p['GKF'],p['GKCR']
+              assert a['initial_geometry_sha256']==b['initial_geometry_sha256'],(B,seed,'initial mismatch')
+              assert a['trace_sha256']==b['trace_sha256'],(B,seed,'trace mismatch')
+              w.writerow([B,seed,a['valid'],b['valid'],a['refused'],b['refused'],a['mvcc'],b['mvcc'],round(100*(b['valid']-a['valid'])/B,6),a['initial_geometry_sha256'],a['trace_sha256']])
+          for B in [64,128,256]:
+            a=[r for r in rows if r['B']==B and r['strategy']=='GKF']
+            b=[r for r in rows if r['B']==B and r['strategy']=='GKCR']
+            print('B=',B,'GK-F valid/offered',sum(x['valid'] for x in a),'/',sum(x['offered'] for x in a),
+                'GK-CR valid/offered',sum(x['valid'] for x in b),'/',sum(x['offered'] for x in b),
+                'difference pp',100*(sum(x['valid'] for x in b)-sum(x['valid'] for x in a))/sum(x['offered'] for x in a))
+          print("All 30 one-block initial-geometry hashes and frozen-request trace hashes matched.")
+          PY
+      - name: Upload evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ijies-equal-start-adversarial-evidence
+          path: |
+            work/base_tests.txt
+            work/adversarial_tests.txt
+            work/one_block_stdout.txt
+            work/one_block_paired.csv
+            work/v1.5.1/layerb/out/bench/equal_start_one_block.jsonl
+            work/v1.5.1/layerb/out/frozen_traces/equal_start_one_block/
+          if-no-files-found: warn
