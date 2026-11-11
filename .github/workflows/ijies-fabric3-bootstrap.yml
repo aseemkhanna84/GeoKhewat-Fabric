@@ -105,6 +105,10 @@ jobs:
           set -euo pipefail
           NET="$PWD/work/v1.5.1/fabric_native"
           source "$NET/runtime-env.sh"
+          # The original harness resolves ../../chaincode_v14/geokhewat-chaincode
+          # relative to fabric_native/client. Link this exact source to v1.5.1 (no code fork).
+          mkdir -p "$GITHUB_WORKSPACE/work/v1.5.1/chaincode_v14"
+          ln -s ../chaincode "$GITHUB_WORKSPACE/work/v1.5.1/chaincode_v14/geokhewat-chaincode"
           # v1.3 defect replay is excluded: legacy 1.3 source is NOT in the approved archive.
           sed -i "s/await v13replay();/console.log('EXCLUDED: v1.3 legacy defect replay, no deployable source');/" "$NET/client/fabric_tests.js"
           cd "$NET/client"
