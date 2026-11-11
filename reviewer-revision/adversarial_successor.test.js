@@ -33,8 +33,8 @@ test('two competing claims into the same gap after multiple retirements never bo
  for(const reverse of [false,true]){
    const S=await chain();
    ok(await S.reg('Q',G.rect(61.4,0,60,40),'K2'),'neighbour');
-   const m=await S.end('RectifyBoundary',['M2',J(G.rect(30,0,30.95,40)),'S','[]']);
-   const q=await S.end('RectifyBoundary',['Q',J(G.rect(60.7,0,60.7,40)),'S','[]']);
+   const m=await S.end('RectifyBoundary',['M2',J(G.rect(30,0,30.5,40)),'S','[]']);
+   const q=await S.end('RectifyBoundary',['Q',J(G.rect(60.3,0,61.1,40)),'S','[]']);
    assert.equal(m.ok,true,m.error);assert.equal(q.ok,true,q.error);
    const codes=S.commit(reverse?[q,m]:[m,q]);
    assert.equal(codes.filter(c=>c==='VALID').length,1,J(codes));
