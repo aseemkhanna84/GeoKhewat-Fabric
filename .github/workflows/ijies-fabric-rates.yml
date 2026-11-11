@@ -58,7 +58,8 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/work/v1.5.1/chaincode_v14"
           ln -s ../chaincode "$GITHUB_WORKSPACE/work/v1.5.1/chaincode_v14/geokhewat-chaincode"
           cp "$GITHUB_WORKSPACE/reviewer-revision/frozen_mixed_loadgen.js" "$NET/client/frozen_mixed_loadgen.js"
-          node reviewer-revision/derive_rate_controlled_fabric.js "$NET/client/frozen_mixed_loadgen.js"\n          node --check "$NET/client/frozen_mixed_loadgen.js"
+          node reviewer-revision/derive_rate_controlled_fabric.js "$NET/client/frozen_mixed_loadgen.js"
+          node --check "$NET/client/frozen_mixed_loadgen.js"
           lscpu | grep -E '^Model name:|^CPU\(s\):' > work/evidence/cpu.txt
           free -m > work/evidence/memory.txt
       - name: Execute 10/20/40 offered TPS as independent matched per-rate chaincodes
