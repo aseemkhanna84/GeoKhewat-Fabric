@@ -1,0 +1,71 @@
+name: IJIES native Fabric 3-org deployment gate
+on:
+  push:
+    branches: [ijies-reviewer-revision-2026-11-10]
+    paths:
+      - ".github/workflows/ijies-fabric-3org.yml"
+      - "reviewer-revision/portable_fabric_bootstrap.sh"
+      - "reviewer-revision/fabric_3org_smoke.js"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  three-org:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Extract approved v1.5.1 source and verify file integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/evidence
+          unzip -q research-artifacts/GeoKhewat_v1.5.1_Reviewer_Sanitized_Source_10Nov2026.zip -d work
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          p=pathlib.Path("work")
+          obj=json.loads((p/"SHA256_MANIFEST.json").read_text())
+          for name,sha in obj["files"].items():
+              assert hashlib.sha256((p/name).read_bytes()).hexdigest()==sha,name
+          print("Integrity passed",len(obj["files"]))
+          PY
+      - name: Bootstrap ephemeral native Fabric 2.5.16 network with three organizations
+        shell: bash
+        run: bash reviewer-revision/portable_fabric_bootstrap.sh
+      - name: Deploy GeoKhewat v1.5.1 chaincode as a service
+        shell: bash
+        run: |
+          set -euo pipefail
+          NET="$GITHUB_WORKSPACE/work/fabric_native"
+          source "$NET/env.sh"
+          cd "$NET"
+          R='"roles":{"admin":["SurveyMSP"],"survey":["SurveyMSP"],"registration":["RegistrationMSP"],"revenue":["RevenueMSP"]}'
+          ./deploy_cc.sh gkcr 9101 "{\"strategy\":\"GKCR\",\"precision\":8,\"cover\":\"poly\",\"eps\":0.01,$R}" \
+            > "$GITHUB_WORKSPACE/work/evidence/deploy_gkcr.log" 2>&1
+          source "$NET/env.sh"
+          peer_env survey Admin
+          peer lifecycle chaincode querycommitted -C landrecords --name gkcr \
+            > "$GITHUB_WORKSPACE/work/evidence/querycommitted.txt"
+      - name: Real-network committed transaction smoke tests from three organizations
+        shell: bash
+        run: |
+          set -euo pipefail
+          NET="$GITHUB_WORKSPACE/work/fabric_native"
+          node reviewer-revision/fabric_3org_smoke.js "$NET" \
+            | tee "$GITHUB_WORKSPACE/work/evidence/three_org_smoke_stdout.txt"
+      - name: Publish nonsecret logs, even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ijies-native-fabric-three-org-diagnostics
+          path: |
+            work/evidence/*
+            work/fabric_native/logs/start.txt
+            work/fabric_native/logs/peer-*.log
+            work/fabric_native/logs/orderer.log
+            work/fabric_native/logs/cc_gkcr.log
+            work/fabric_native/logs/deploy_gkcr.log
+          if-no-files-found: warn
