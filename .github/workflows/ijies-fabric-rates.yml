@@ -70,11 +70,11 @@ jobs:
           GEN="$NET/client/frozen_mixed_loadgen.js"
           for rate in 10 20 40; do
             for seed in 17 23 29; do
-              node "$GEN" "{\\"mode\\":\\"prepare\\",\\"seed\\":$seed,\\"rate\\":$rate}" | tee "work/evidence/trace-$rate-$seed.txt"
+              node "$GEN" "{\"mode\":\"prepare\",\"seed\":$seed,\"rate\":$rate}" | tee "work/evidence/trace-$rate-$seed.txt"
               if [ "$seed" = "23" ]; then order="gkcr$rate gkf$rate"; else order="gkf$rate gkcr$rate"; fi
               for cc in $order; do
                 echo "RATE_CONTROLLED_NETWORK rate=$rate seed=$seed cc=$cc"
-                node "$GEN" "{\\"mode\\":\\"run\\",\\"seed\\":$seed,\\"cc\\":\\"$cc\\",\\"rate\\":$rate}" | tee "work/evidence/run-$rate-$seed-$cc.txt"
+                node "$GEN" "{\"mode\":\"run\",\"seed\":$seed,\"cc\":\"$cc\",\"rate\":$rate}" | tee "work/evidence/run-$rate-$seed-$cc.txt"
               done
             done
           done
