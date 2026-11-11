@@ -42,7 +42,7 @@ jobs:
           mkdir -p work/reviewer-revision
           cp reviewer-revision/independent_coverage_diagnostic.js work/reviewer-revision/
           node --check work/reviewer-revision/independent_coverage_diagnostic.js
-          node work/reviewer-revision/independent_coverage_diagnostic.js | tee work/geometry_coverage_audit.log
+          NODE_PATH="$GITHUB_WORKSPACE/work/v1.5.1/chaincode/node_modules" node work/reviewer-revision/independent_coverage_diagnostic.js | tee work/geometry_coverage_audit.log
       - name: Create derived exact-global-scan reference (original archive preserved)
         shell: bash
         run: |
