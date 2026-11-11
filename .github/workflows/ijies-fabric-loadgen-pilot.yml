@@ -1,0 +1,131 @@
+name: IJIES three-org Fabric real loadgen pilot
+on:
+  push:
+    branches: [ijies-reviewer-revision-2026-11-10]
+    paths: [".github/workflows/ijies-fabric-loadgen-pilot.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  real-network-pilot:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Verify approved v1.5.1 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/evidence
+          ZIP=research-artifacts/GeoKhewat_v1.5.1_Reviewer_Sanitized_Source_10Nov2026.zip
+          sha256sum "$ZIP" | tee work/evidence/archive.sha256
+          unzip -q "$ZIP" -d work
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          p=pathlib.Path("work"); m=json.loads((p/"SHA256_MANIFEST.json").read_text())
+          for name,sha in m["files"].items():
+              assert hashlib.sha256((p/name).read_bytes()).hexdigest()==sha,name
+          print("SOURCE_INTEGRITY_PASS",len(m["files"]))
+          PY
+      - name: Bootstrap ephemeral real three-org Fabric 2.5.16
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash reviewer-revision/fabric3-bootstrap.sh
+      - name: Deploy GKF and GKCR under the same geometry policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          NET="$GITHUB_WORKSPACE/work/v1.5.1/fabric_native"
+          source "$NET/runtime-env.sh"
+          (cd "$GITHUB_WORKSPACE/work/v1.5.1/chaincode" && npm ci --no-audit --no-fund)
+          (cd "$NET/client" && npm ci --no-audit --no-fund)
+          ROLES='"roles":{"admin":["SurveyMSP"],"survey":["SurveyMSP"],"registration":["RegistrationMSP"],"revenue":["RevenueMSP"]}'
+          for spec in "gkf:9101:GKF" "gkcr:9102:GKCR"; do
+            IFS=: read -r name port strategy <<< "$spec"
+            CC_DIR="$GITHUB_WORKSPACE/work/v1.5.1/chaincode" bash "$NET/deploy_cc.sh" "$name" "$port" "{\"strategy\":\"$strategy\",\"precision\":8,\"cover\":\"poly\",\"eps\":0.01,$ROLES}" > "work/evidence/deploy-$name.log" 2>&1
+          done
+          source "$NET/env.sh"
+          peer_env survey Admin
+          peer lifecycle chaincode querycommitted -C landrecords --name gkf | tee work/evidence/committed-gkf.txt
+          peer lifecycle chaincode querycommitted -C landrecords --name gkcr | tee work/evidence/committed-gkcr.txt
+      - name: Record runner resources and pilot protocol
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -v > work/evidence/node_version.txt
+          lscpu | grep -E '^Model name:|^CPU\(s\):|^Thread\(s\)' > work/evidence/cpu.txt
+          free -m > work/evidence/memory.txt
+          printf 'ONE repeat; warmup 2s, 12s offered duration. Real 3-org Fabric. This is NOT Caliper or a 3-repeat paper benchmark.\n' > work/evidence/protocol.txt
+      - name: Six real registration experiments (10/20/40 offered TPS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          NET="$GITHUB_WORKSPACE/work/v1.5.1/fabric_native"
+          source "$NET/runtime-env.sh"
+          for cc in gkf gkcr; do
+            for rate in 10 20 40; do
+              echo "RUN $cc reg $rate"
+              node "$NET/client/loadgen.js" "{\"cc\":\"$cc\",\"workload\":\"reg\",\"rate\":$rate,\"duration\":12,\"rep\":1,\"warmup\":2}" | tee "work/evidence/reg_$cc-$rate.txt"
+            done
+          done
+      - name: Two contended edit pilot experiments
+        shell: bash
+        run: |
+          set -euo pipefail
+          NET="$GITHUB_WORKSPACE/work/v1.5.1/fabric_native"
+          source "$NET/runtime-env.sh"
+          for cc in gkf gkcr; do
+            node "$NET/client/loadgen.js" "{\"cc\":\"$cc\",\"workload\":\"mixed\",\"rate\":10,\"duration\":12,\"rep\":1,\"warmup\":2}" | tee "work/evidence/mixed_$cc.txt"
+          done
+      - name: Audit per-transaction accounting and p95 latency
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,json,csv
+          p=pathlib.Path('work/v1.5.1/fabric_native/results/loadgen.jsonl')
+          rows=[json.loads(x) for x in p.read_text().splitlines() if x.strip()]
+          assert len(rows)==8,('Expected 8 pilot combinations',len(rows))
+          path=pathlib.Path('work/evidence/pilot_summary.csv')
+          cols=['run','cc','workload','rate','duration','warmup','offered','committed','endorsement_refused','mvcc_invalid','phantom_invalid','other','throughput_tps','latency_mean_ms','p50_ms','p95_ms','p99_ms']
+          with path.open('w',newline='') as out:
+              w=csv.DictWriter(out,fieldnames=cols);w.writeheader()
+              for r in rows:
+                  codes=r.get('codes',{})
+                  assert sum(codes.values())==r['offered'],(r['run'],'offered mismatch')
+                  assert codes.get('VALID',0)==r['committed'],(r['run'],'committed mismatch')
+                  lat=r.get('latency_ms_valid') or {}
+                  row={'run':r['run'],'cc':r['cc'],'workload':r['workload'],
+                       'rate':r['rate'],'duration':r['duration'],'warmup':r['warmup'],
+                       'offered':r['offered'],'committed':r['committed'],
+                       'endorsement_refused':codes.get('ENDORSEMENT_REFUSED',0),
+                       'mvcc_invalid':codes.get('MVCC_READ_CONFLICT',0),
+                       'phantom_invalid':codes.get('PHANTOM_READ_CONFLICT',0),
+                       'other':sum(n for k,n in codes.items() if k not in {'VALID','ENDORSEMENT_REFUSED','MVCC_READ_CONFLICT','PHANTOM_READ_CONFLICT'}),
+                       'throughput_tps':r['committed_tps'],'latency_mean_ms':lat.get('mean'),
+                       'p50_ms':lat.get('p50'),'p95_ms':lat.get('p95'),'p99_ms':lat.get('p99')}
+                  w.writerow(row);print('AUDITED_PILOT',row)
+          print('PILOT_ACCOUNTING_PASS',len(rows))
+          PY
+      - name: Upload synthetic metrics and traces; never upload MSP private keys
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ijies-v151-real-fabric-one-repeat-load-pilot
+          path: |
+            work/evidence/archive.sha256
+            work/evidence/protocol.txt
+            work/evidence/node_version.txt
+            work/evidence/cpu.txt
+            work/evidence/memory.txt
+            work/evidence/committed-*.txt
+            work/evidence/pilot_summary.csv
+            work/evidence/reg_*.txt
+            work/evidence/mixed_*.txt
+            work/v1.5.1/fabric_native/results/loadgen.jsonl
+            work/v1.5.1/fabric_native/results/tx/*.csv
+          if-no-files-found: warn
